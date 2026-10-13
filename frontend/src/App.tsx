@@ -157,6 +157,14 @@ export default function App() {
     }
   }
 
+  function handleSchemaInsert(value: string) {
+    setQuestion((current) => {
+      const trimmed = current.trim();
+      if (!trimmed) return value;
+      return `${trimmed} ${value}`;
+    });
+  }
+
   const examples = [
     "Which customers have placed orders?",
     "What are our most expensive products?",
@@ -177,12 +185,20 @@ export default function App() {
           {schemaSummary ? (
             schemaSummary.tables.slice(0, 6).map((table) => (
               <div className="schema-table" key={table.name}>
-                <div className="schema-table-name">{table.name}</div>
+                <button type="button" className="schema-table-name schema-table-button" onClick={() => handleSchemaInsert(table.name)}>
+                  {table.name}
+                </button>
                 <ul className="schema-columns">
                   {table.columns.slice(0, 4).map((column) => (
                     <li key={`${table.name}-${column.name}`}>
-                      <span className="schema-column-name">{column.name}</span>
-                      {column.is_primary_key && <span className="schema-tag">PK</span>}
+                      <button
+                        type="button"
+                        className="schema-column-button"
+                        onClick={() => handleSchemaInsert(`${table.name}.${column.name}`)}
+                      >
+                        <span className="schema-column-name">{column.name}</span>
+                        {column.is_primary_key && <span className="schema-tag">PK</span>}
+                      </button>
                     </li>
                   ))}
                   {table.columns.length > 4 && (
