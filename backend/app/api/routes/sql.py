@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.routes.schema import fetch_schema_metadata
 from app.core.config import get_settings
 
 try:
@@ -63,6 +64,33 @@ def _sanitize_sql(sql: str) -> str:
     return cleaned
 
 
+def _format_schema_context(tables: list[dict[str, Any]]) -> str:
+    if not tables:
+        return "No database schema metadata is available yet."
+
+    lines: list[str] = []
+    for table in tables:
+        columns = table.get("columns", [])
+        column_details = ", ".join(
+            f"{column['name']} {column['type']}" + (" NULL" if column.get("nullable") else " NOT NULL")
+            + (" PRIMARY KEY" if column.get("is_primary_key") else "")
+            for column in columns
+        )
+        lines.append(f"- {table['name']} ({column_details})")
+
+        if table.get("primary_keys"):
+            lines.append(f"  PK: {', '.join(table['primary_keys'])}")
+
+        if table.get("foreign_keys"):
+            fk_parts = [
+                f"{fk['column']} -> {fk['references_table']}.{fk['references_column']}"
+                for fk in table["foreign_keys"]
+            ]
+            lines.append(f"  FK: {', '.join(fk_parts)}")
+
+    return "\n".join(lines)
+
+
 def connect_db():
     settings = get_settings()
     if psycopg is None:
@@ -75,16 +103,29 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
     client = _get_openai_client()
     settings = get_settings()
 
+    try:
+        schema_tables = fetch_schema_metadata()
+    except Exception:
+        schema_tables = []
+
+    schema_context = _format_schema_context(schema_tables)
+
     prompt = (
-        "Convert the user's request to a valid PostgreSQL query. "
-        "Return only the SQL statement and no extra explanation.\n\n"
-        f"Question: {payload.question}"
+        "Convert the user's request to a valid PostgreSQL query using the schema below. "
+        "Use the exact table and column names from the schema. Return only the SQL statement and no extra explanation.\n\n"
+        f"Schema:\n{schema_context}\n\nQuestion: {payload.question}"
     )
 
     response = client.chat.completions.create(
         model=settings.openai_model,
         messages=[
-            {"role": "system", "content": "You generate PostgreSQL SQL from natural-language questions."},
+            {
+                "role": "system",
+                "content": (
+                    "You generate PostgreSQL SQL from natural-language questions. "
+                    "Use the provided schema metadata exactly and return only a SQL statement."
+                ),
+            },
             {"role": "user", "content": prompt},
         ],
         temperature=0,
