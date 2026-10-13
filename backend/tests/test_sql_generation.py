@@ -76,6 +76,18 @@ def test_generate_sql_uses_schema_metadata_in_prompt(monkeypatch):
     assert "email" in prompt.lower()
 
 
+def test_run_sql_endpoint_rejects_multiple_statements(monkeypatch):
+    from app.api.routes import sql as sql_routes
+
+    response = client.post(
+        "/api/v1/sql/run",
+        json={"sql": "SELECT id FROM customers; DROP TABLE customers;"},
+    )
+
+    assert response.status_code == 400
+    assert "SELECT" in response.json()["detail"]
+
+
 def test_run_sql_endpoint_executes_select_statement(monkeypatch):
     from app.api.routes import sql as sql_routes
 

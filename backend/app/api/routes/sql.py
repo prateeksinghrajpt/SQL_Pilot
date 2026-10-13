@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import sqlglot
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlglot import exp
 
 from app.api.routes.schema import fetch_schema_metadata
 from app.core.config import get_settings
@@ -61,6 +63,29 @@ def _sanitize_sql(sql: str) -> str:
         raise HTTPException(status_code=400, detail="SQL is empty")
     if ";" not in cleaned:
         cleaned += ";"
+    return cleaned
+
+
+def _validate_select_statement(sql: str) -> str:
+    cleaned = _sanitize_sql(sql)
+
+    if cleaned.count(";") > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Only a single SELECT statement is allowed for execution.",
+        )
+
+    try:
+        parsed = sqlglot.parse_one(cleaned, read="postgres")
+    except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
+        raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
+
+    if not getattr(parsed, "is_select", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Only SELECT queries are allowed in this phase.",
+        )
+
     return cleaned
 
 
@@ -139,10 +164,7 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
 
 @router.post("/run")
 def run_sql(payload: RunSqlRequest) -> dict[str, Any]:
-    sql = _sanitize_sql(payload.sql)
-
-    if not sql.lower().startswith(("select", "with")):
-        raise HTTPException(status_code=400, detail="Only SELECT queries are allowed in this phase")
+    sql = _validate_select_statement(payload.sql)
 
     with connect_db() as conn:
         cursor = conn.cursor()
