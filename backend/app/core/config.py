@@ -1,5 +1,9 @@
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -8,13 +12,15 @@ class Settings(BaseSettings):
         "@localhost:5432/sqlcopilot"
     )
     cors_origins: str = "http://localhost:5173"
-    # Reserved for Azure OpenAI integration in a later phase.
-    azure_openai_endpoint: str | None = None
-    azure_openai_api_key: str | None = None
-    azure_openai_api_version: str = "2024-10-21"
-    azure_openai_deployment: str | None = None
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    openai_organization: str | None = None
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     @property
     def cors_origins_list(self) -> list[str]:
