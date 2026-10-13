@@ -66,6 +66,12 @@ def _sanitize_sql(sql: str) -> str:
     return cleaned
 
 
+def _normalize_identifier(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip('"`[]').lower()
+
+
 def _validate_select_statement(sql: str) -> str:
     cleaned = _sanitize_sql(sql)
 
@@ -85,6 +91,67 @@ def _validate_select_statement(sql: str) -> str:
             status_code=400,
             detail="Only SELECT queries are allowed in this phase.",
         )
+
+    try:
+        schema_tables = fetch_schema_metadata()
+    except Exception:
+        return cleaned
+
+    schema_lookup: dict[str, set[str]] = {}
+    for table in schema_tables:
+        table_name = _normalize_identifier(table.get("name"))
+        if not table_name:
+            continue
+        schema_lookup[table_name] = {
+            _normalize_identifier(column.get("name"))
+            for column in table.get("columns", [])
+            if column.get("name")
+        }
+
+    tables_in_query: list[str] = []
+    alias_map: dict[str, str] = {}
+    for table_node in parsed.find_all(exp.Table):
+        table_name = _normalize_identifier(table_node.name)
+        if not table_name:
+            continue
+        tables_in_query.append(table_name)
+        if table_node.alias:
+            alias_map[_normalize_identifier(table_node.alias_or_name)] = table_name
+
+    for table_name in tables_in_query:
+        if table_name not in schema_lookup:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Table '{table_name}' is not present in the current schema.",
+            )
+
+    for column_node in parsed.find_all(exp.Column):
+        column_name = _normalize_identifier(column_node.name)
+        if not column_name or column_name == "*":
+            continue
+
+        if column_node.table:
+            table_ref = _normalize_identifier(column_node.table)
+            if table_ref in alias_map:
+                table_ref = alias_map[table_ref]
+            if table_ref not in schema_lookup or column_name not in schema_lookup[table_ref]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Column '{column_name}' does not exist on table '{table_ref}'.",
+                )
+            continue
+
+        matches = [table for table in tables_in_query if column_name in schema_lookup.get(table, set())]
+        if not matches:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{column_name}' does not exist in the selected schema.",
+            )
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{column_name}' is ambiguous across the selected tables.",
+            )
 
     return cleaned
 

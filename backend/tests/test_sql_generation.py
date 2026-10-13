@@ -88,6 +88,34 @@ def test_run_sql_endpoint_rejects_multiple_statements(monkeypatch):
     assert "SELECT" in response.json()["detail"]
 
 
+def test_run_sql_endpoint_rejects_unknown_table_or_column(monkeypatch):
+    from app.api.routes import sql as sql_routes
+
+    monkeypatch.setattr(
+        sql_routes,
+        "fetch_schema_metadata",
+        lambda: [
+            {
+                "name": "customers",
+                "columns": [
+                    {"name": "id", "type": "bigint", "nullable": False, "is_primary_key": True},
+                    {"name": "email", "type": "text", "nullable": False, "is_primary_key": False},
+                ],
+                "primary_keys": ["id"],
+                "foreign_keys": [],
+            }
+        ],
+    )
+
+    response = client.post(
+        "/api/v1/sql/run",
+        json={"sql": "SELECT missing_field FROM customers;"},
+    )
+
+    assert response.status_code == 400
+    assert "missing_field" in response.json()["detail"]
+
+
 def test_run_sql_endpoint_executes_select_statement(monkeypatch):
     from app.api.routes import sql as sql_routes
 
