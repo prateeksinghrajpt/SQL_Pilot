@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type HealthResponse = { status: string; service: string; version: string };
 type SchemaColumn = { name: string; type?: string; nullable?: boolean; is_primary_key?: boolean };
@@ -13,6 +13,7 @@ type SchemaTable = {
   foreign_keys: SchemaForeignKey[];
 };
 type SchemaSummary = { table_count: number; tables: SchemaTable[] };
+type QueryHistoryItem = { id: string; question: string; sql: string; createdAt: string };
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 const SQL_KEYWORDS = new Set([
@@ -74,6 +75,15 @@ export default function App() {
   const [isEditingSql, setIsEditingSql] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [schemaSummary, setSchemaSummary] = useState<SchemaSummary | null>(null);
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem("sql-copilot-history");
+      return raw ? (JSON.parse(raw) as QueryHistoryItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -122,6 +132,20 @@ export default function App() {
 
       const data = await response.json() as { sql: string };
       setGeneratedSql(data.sql);
+      setQueryHistory((current) => {
+        const next = [{
+          id: `${Date.now()}`,
+          question,
+          sql: data.sql,
+          createdAt: new Date().toISOString(),
+        }, ...current].slice(0, 6);
+
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("sql-copilot-history", JSON.stringify(next));
+        }
+
+        return next;
+      });
     } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "Unknown error");
     } finally {
@@ -165,11 +189,24 @@ export default function App() {
     });
   }
 
-  const examples = [
-    "Which customers have placed orders?",
-    "What are our most expensive products?",
-    "Show orders by status"
-  ];
+  const examples = useMemo(() => {
+    if (!schemaSummary || schemaSummary.tables.length === 0) {
+      return [
+        "Which customers have placed orders?",
+        "What are our most expensive products?",
+        "Show orders by status",
+      ];
+    }
+
+    const firstTable = schemaSummary.tables[0];
+    const firstColumn = firstTable.columns[0]?.name ?? "id";
+
+    return [
+      `Show the first 10 rows from ${firstTable.name}`,
+      `List ${firstTable.name} by ${firstColumn}`,
+      `Which records in ${firstTable.name} have a primary key?`,
+    ];
+  }, [schemaSummary]);
 
   return (
     <main className="app-shell">
@@ -178,7 +215,28 @@ export default function App() {
         <div className="brand-copy"><strong>SQL Copilot</strong><span>AI data workspace</span></div>
         <div className="sidebar-section">WORKSPACE</div>
         <button className="nav-item active" type="button"><span>⌘</span> New query</button>
-        <button className="nav-item" type="button" disabled title="Available in a later phase"><span>◷</span> Query history</button>
+
+        <div className="history-panel">
+          <div className="sidebar-section">RECENT</div>
+          {queryHistory.length === 0 ? (
+            <div className="history-empty">No recent queries yet</div>
+          ) : (
+            queryHistory.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="history-item"
+                onClick={() => {
+                  setQuestion(item.question);
+                  setGeneratedSql(item.sql);
+                }}
+              >
+                <span className="history-item-title">{item.question}</span>
+                <span className="history-item-meta">{new Date(item.createdAt).toLocaleDateString()}</span>
+              </button>
+            ))
+          )}
+        </div>
 
         <div className="schema-panel">
           <div className="sidebar-section">SCHEMA</div>
