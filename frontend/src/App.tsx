@@ -3,6 +3,54 @@ import { useEffect, useState } from "react";
 type HealthResponse = { status: string; service: string; version: string };
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+const SQL_KEYWORDS = new Set([
+  "SELECT","FROM","WHERE","JOIN","LEFT","RIGHT","INNER","OUTER","ON","AS","AND","OR","IN","LIKE","IS","NULL","DISTINCT","COUNT","SUM","AVG","MAX","MIN","GROUP","BY","ORDER","LIMIT","HAVING","CASE","WHEN","THEN","ELSE","END","INSERT","INTO","VALUES","UPDATE","DELETE","CREATE","TABLE","ALTER","DROP","WITH","UNION","ALL","NOT","EXISTS","BETWEEN","DESC","ASC"
+]);
+
+function renderSqlTokens(sql: string) {
+  const tokenRegex = /(\s+|--.*?$|'.*?'|".*?"|`.*?`|\b(?:SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|AND|OR|IN|LIKE|IS|NULL|DISTINCT|COUNT|SUM|AVG|MAX|MIN|GROUP|BY|ORDER|LIMIT|HAVING|CASE|WHEN|THEN|ELSE|END|INSERT|INTO|VALUES|UPDATE|DELETE|CREATE|TABLE|ALTER|DROP|WITH|UNION|ALL|NOT|EXISTS|BETWEEN|DESC|ASC)\b|\b[A-Za-z_][A-Za-z0-9_]*\b|\d+(?:\.\d+)?|[(),.;=<>+\-*\/]+)/gim;
+
+  const parts: { text: string; className?: string }[] = [];
+  let lastIndex = 0;
+
+  for (const match of sql.matchAll(tokenRegex)) {
+    const value = match[0];
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      parts.push({ text: sql.slice(lastIndex, index) });
+    }
+
+    const upper = value.toUpperCase();
+    let className: string | undefined;
+
+    if (/^\s+$/.test(value)) {
+      className = undefined;
+    } else if (/^['"`]/.test(value)) {
+      className = "sql-token-string";
+    } else if (/^\d+(?:\.\d+)?$/.test(value)) {
+      className = "sql-token-number";
+    } else if (SQL_KEYWORDS.has(upper)) {
+      className = "sql-token-keyword";
+    } else if (/^[(),.;=<>+\-*\/]+$/.test(value)) {
+      className = "sql-token-punctuation";
+    } else {
+      className = "sql-token-identifier";
+    }
+
+    parts.push({ text: value, className });
+    lastIndex = index + value.length;
+  }
+
+  if (lastIndex < sql.length) {
+    parts.push({ text: sql.slice(lastIndex) });
+  }
+
+  return parts.map((part, index) => (
+    <span key={`${part.text}-${index}`} className={part.className}>{part.text}</span>
+  ));
+}
+
 export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -127,26 +175,43 @@ export default function App() {
             </div>
           </form>
           {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
-          {generatedSql && (
-            <div className="sql-editor-shell">
-              <div className="sql-editor-header">
+          <div className="sql-editor-shell">
+            <div className="sql-editor-header">
+              <div className="sql-editor-brand">
+                <span className="editor-icon">&lt;/&gt;</span>
                 <span className="sql-editor-label">SQL</span>
-                <div className="sql-editor-actions">
-                  <button className="icon-button" type="button" onClick={() => setIsEditingSql((value) => !value)} aria-label="Edit SQL">
-                    ✎
-                  </button>
-                  <button className="run-sql-button" type="button" onClick={handleRunSql} disabled={runningSql}>
-                    {runningSql ? "Executing…" : "Run SQL"}
-                  </button>
-                </div>
               </div>
-              {isEditingSql ? (
+              <div className="sql-editor-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => setIsEditingSql((value) => !value)}
+                  aria-label="Edit SQL"
+                  disabled={!generatedSql.trim()}
+                >
+                  ✎
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={handleRunSql}
+                  disabled={runningSql || !generatedSql.trim()}
+                  aria-label="Run SQL"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+            {generatedSql ? (
+              isEditingSql ? (
                 <textarea className="sql-editor" value={generatedSql} onChange={(event) => setGeneratedSql(event.target.value)} rows={10} />
               ) : (
-                <pre className="sql-preview">{generatedSql}</pre>
-              )}
-            </div>
-          )}
+                <pre className="sql-preview">{renderSqlTokens(generatedSql)}</pre>
+              )
+            ) : (
+              <div className="sql-placeholder">SQL draft will appear here</div>
+            )}
+          </div>
           {queryResult && (
             <div className="notice results-box">
               <span>Results</span>
