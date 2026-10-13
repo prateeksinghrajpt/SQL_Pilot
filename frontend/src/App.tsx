@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 
 type HealthResponse = { status: string; service: string; version: string };
+type SchemaColumn = { name: string; type?: string; nullable?: boolean; is_primary_key?: boolean };
+type SchemaForeignKey = { column: string; references_table: string; references_column: string };
+type SchemaTable = {
+  name: string;
+  column_count: number;
+  primary_key_count: number;
+  foreign_key_count: number;
+  columns: SchemaColumn[];
+  primary_keys: string[];
+  foreign_keys: SchemaForeignKey[];
+};
+type SchemaSummary = { table_count: number; tables: SchemaTable[] };
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 const SQL_KEYWORDS = new Set([
@@ -61,6 +73,7 @@ export default function App() {
   const [runningSql, setRunningSql] = useState(false);
   const [isEditingSql, setIsEditingSql] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [schemaSummary, setSchemaSummary] = useState<SchemaSummary | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,6 +87,17 @@ export default function App() {
         if (error instanceof Error && error.name === "AbortError") return;
         setApiError(error instanceof Error ? error.message : "Could not reach the API");
       });
+
+    fetch(`${API_BASE_URL}/api/v1/schema/summary`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Schema returned HTTP ${response.status}`);
+        return (await response.json()) as SchemaSummary;
+      })
+      .then(setSchemaSummary)
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === "AbortError") return;
+      });
+
     return () => controller.abort();
   }, []);
 
@@ -147,7 +171,31 @@ export default function App() {
         <div className="sidebar-section">WORKSPACE</div>
         <button className="nav-item active" type="button"><span>⌘</span> New query</button>
         <button className="nav-item" type="button" disabled title="Available in a later phase"><span>◷</span> Query history</button>
-        <button className="nav-item" type="button" disabled title="Available in a later phase"><span>▤</span> Schema explorer</button>
+
+        <div className="schema-panel">
+          <div className="sidebar-section">SCHEMA</div>
+          {schemaSummary ? (
+            schemaSummary.tables.slice(0, 6).map((table) => (
+              <div className="schema-table" key={table.name}>
+                <div className="schema-table-name">{table.name}</div>
+                <ul className="schema-columns">
+                  {table.columns.slice(0, 4).map((column) => (
+                    <li key={`${table.name}-${column.name}`}>
+                      <span className="schema-column-name">{column.name}</span>
+                      {column.is_primary_key && <span className="schema-tag">PK</span>}
+                    </li>
+                  ))}
+                  {table.columns.length > 4 && (
+                    <li className="schema-more">+{table.columns.length - 4} more</li>
+                  )}
+                </ul>
+              </div>
+            ))
+          ) : (
+            <div className="schema-empty">Loading schema…</div>
+          )}
+        </div>
+
         <div className="sidebar-bottom">
           <span className={`status-dot ${health ? "online" : apiError ? "offline" : ""}`} />
           <div>
