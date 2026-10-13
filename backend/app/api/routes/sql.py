@@ -3,12 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import sqlglot
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlglot import exp
 
-from app.api.routes.schema import fetch_schema_metadata
 from app.core.config import get_settings
 
 try:
@@ -66,123 +63,6 @@ def _sanitize_sql(sql: str) -> str:
     return cleaned
 
 
-def _normalize_identifier(value: str | None) -> str:
-    if not value:
-        return ""
-    return value.strip('"`[]').lower()
-
-
-def _validate_select_statement(sql: str) -> str:
-    cleaned = _sanitize_sql(sql)
-
-    if cleaned.count(";") > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Only a single SELECT statement is allowed for execution.",
-        )
-
-    try:
-        parsed = sqlglot.parse_one(cleaned, read="postgres")
-    except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
-        raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
-
-    if not getattr(parsed, "is_select", False):
-        raise HTTPException(
-            status_code=400,
-            detail="Only SELECT queries are allowed in this phase.",
-        )
-
-    try:
-        schema_tables = fetch_schema_metadata()
-    except Exception:
-        return cleaned
-
-    schema_lookup: dict[str, set[str]] = {}
-    for table in schema_tables:
-        table_name = _normalize_identifier(table.get("name"))
-        if not table_name:
-            continue
-        schema_lookup[table_name] = {
-            _normalize_identifier(column.get("name"))
-            for column in table.get("columns", [])
-            if column.get("name")
-        }
-
-    tables_in_query: list[str] = []
-    alias_map: dict[str, str] = {}
-    for table_node in parsed.find_all(exp.Table):
-        table_name = _normalize_identifier(table_node.name)
-        if not table_name:
-            continue
-        tables_in_query.append(table_name)
-        if table_node.alias:
-            alias_map[_normalize_identifier(table_node.alias_or_name)] = table_name
-
-    for table_name in tables_in_query:
-        if table_name not in schema_lookup:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Table '{table_name}' is not present in the current schema.",
-            )
-
-    for column_node in parsed.find_all(exp.Column):
-        column_name = _normalize_identifier(column_node.name)
-        if not column_name or column_name == "*":
-            continue
-
-        if column_node.table:
-            table_ref = _normalize_identifier(column_node.table)
-            if table_ref in alias_map:
-                table_ref = alias_map[table_ref]
-            if table_ref not in schema_lookup or column_name not in schema_lookup[table_ref]:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Column '{column_name}' does not exist on table '{table_ref}'.",
-                )
-            continue
-
-        matches = [table for table in tables_in_query if column_name in schema_lookup.get(table, set())]
-        if not matches:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Column '{column_name}' does not exist in the selected schema.",
-            )
-        if len(matches) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Column '{column_name}' is ambiguous across the selected tables.",
-            )
-
-    return cleaned
-
-
-def _format_schema_context(tables: list[dict[str, Any]]) -> str:
-    if not tables:
-        return "No database schema metadata is available yet."
-
-    lines: list[str] = []
-    for table in tables:
-        columns = table.get("columns", [])
-        column_details = ", ".join(
-            f"{column['name']} {column['type']}" + (" NULL" if column.get("nullable") else " NOT NULL")
-            + (" PRIMARY KEY" if column.get("is_primary_key") else "")
-            for column in columns
-        )
-        lines.append(f"- {table['name']} ({column_details})")
-
-        if table.get("primary_keys"):
-            lines.append(f"  PK: {', '.join(table['primary_keys'])}")
-
-        if table.get("foreign_keys"):
-            fk_parts = [
-                f"{fk['column']} -> {fk['references_table']}.{fk['references_column']}"
-                for fk in table["foreign_keys"]
-            ]
-            lines.append(f"  FK: {', '.join(fk_parts)}")
-
-    return "\n".join(lines)
-
-
 def connect_db():
     settings = get_settings()
     if psycopg is None:
@@ -195,29 +75,16 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
     client = _get_openai_client()
     settings = get_settings()
 
-    try:
-        schema_tables = fetch_schema_metadata()
-    except Exception:
-        schema_tables = []
-
-    schema_context = _format_schema_context(schema_tables)
-
     prompt = (
-        "Convert the user's request to a valid PostgreSQL query using the schema below. "
-        "Use the exact table and column names from the schema. Return only the SQL statement and no extra explanation.\n\n"
-        f"Schema:\n{schema_context}\n\nQuestion: {payload.question}"
+        "Convert the user's request to a valid PostgreSQL query. "
+        "Return only the SQL statement and no extra explanation.\n\n"
+        f"Question: {payload.question}"
     )
 
     response = client.chat.completions.create(
         model=settings.openai_model,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You generate PostgreSQL SQL from natural-language questions. "
-                    "Use the provided schema metadata exactly and return only a SQL statement."
-                ),
-            },
+            {"role": "system", "content": "You generate PostgreSQL SQL from natural-language questions."},
             {"role": "user", "content": prompt},
         ],
         temperature=0,
@@ -231,7 +98,10 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
 
 @router.post("/run")
 def run_sql(payload: RunSqlRequest) -> dict[str, Any]:
-    sql = _validate_select_statement(payload.sql)
+    sql = _sanitize_sql(payload.sql)
+
+    if not sql.lower().startswith(("select", "with")):
+        raise HTTPException(status_code=400, detail="Only SELECT queries are allowed in this phase")
 
     with connect_db() as conn:
         cursor = conn.cursor()
