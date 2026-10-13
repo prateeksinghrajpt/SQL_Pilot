@@ -7,6 +7,12 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
+  const [generatedSql, setGeneratedSql] = useState("");
+  const [queryResult, setQueryResult] = useState<Record<string, unknown>[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [runningSql, setRunningSql] = useState(false);
+  const [isEditingSql, setIsEditingSql] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -23,9 +29,60 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Intentionally no generation API call in Phase 1.
+    setError(null);
+    setQueryResult(null);
+    setGeneratedSql("");
+    setLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/sql/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail ?? "Could not generate SQL");
+      }
+
+      const data = await response.json() as { sql: string };
+      setGeneratedSql(data.sql);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRunSql() {
+    if (!generatedSql.trim()) return;
+
+    setError(null);
+    setRunningSql(true);
+    setQueryResult(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/sql/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: generatedSql }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail ?? "Could not execute SQL");
+      }
+
+      const result = await response.json() as { rows: Record<string, unknown>[]; columns: string[] };
+      setQueryResult(result.rows);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Unknown error");
+    } finally {
+      setRunningSql(false);
+    }
   }
 
   const examples = [
@@ -59,16 +116,43 @@ export default function App() {
         <div className="content">
           <div className="welcome-icon" aria-hidden="true">✳</div>
           <h2>What would you like to know?</h2>
-          <p className="subtitle">Describe a business question. SQL generation will be enabled in a later phase.</p>
+          <p className="subtitle">Describe a business question. The app will generate SQL for review, then you can edit and run it manually.</p>
           <form className="query-box" onSubmit={handleSubmit}>
             <label className="sr-only" htmlFor="question">Your data question</label>
             <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)}
               placeholder="e.g. Show the top 10 customers by total revenue…" rows={3} />
             <div className="query-box-footer">
-              <span className="input-hint">Natural language → SQL (coming soon)</span>
-              <button className="submit-button" type="submit" disabled={!question.trim()}>Prepare question <span>↗</span></button>
+              <span className="input-hint">Natural language → SQL draft</span>
+              <button className="submit-button" type="submit" disabled={!question.trim() || loading}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
             </div>
           </form>
+          {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
+          {generatedSql && (
+            <div className="sql-editor-shell">
+              <div className="sql-editor-header">
+                <span className="sql-editor-label">SQL</span>
+                <div className="sql-editor-actions">
+                  <button className="icon-button" type="button" onClick={() => setIsEditingSql((value) => !value)} aria-label="Edit SQL">
+                    ✎
+                  </button>
+                  <button className="run-sql-button" type="button" onClick={handleRunSql} disabled={runningSql}>
+                    {runningSql ? "Executing…" : "Run SQL"}
+                  </button>
+                </div>
+              </div>
+              {isEditingSql ? (
+                <textarea className="sql-editor" value={generatedSql} onChange={(event) => setGeneratedSql(event.target.value)} rows={10} />
+              ) : (
+                <pre className="sql-preview">{generatedSql}</pre>
+              )}
+            </div>
+          )}
+          {queryResult && (
+            <div className="notice results-box">
+              <span>Results</span>
+              <pre>{JSON.stringify(queryResult, null, 2)}</pre>
+            </div>
+          )}
           <div className="section-label">TRY ASKING</div>
           <div className="suggestions">
             {examples.map((example) => (
