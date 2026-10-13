@@ -102,6 +102,30 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
     return metadata
 
 
+def build_schema_summary(tables: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized_tables: list[dict[str, Any]] = []
+    for table in tables:
+        columns = table.get("columns", [])
+        normalized_tables.append(
+            {
+                "name": table.get("name"),
+                "column_count": len(columns),
+                "primary_key_count": len(table.get("primary_keys", [])),
+                "foreign_key_count": len(table.get("foreign_keys", [])),
+                "columns": columns,
+                "primary_keys": table.get("primary_keys", []),
+                "foreign_keys": table.get("foreign_keys", []),
+            }
+        )
+
+    return {"table_count": len(normalized_tables), "tables": normalized_tables}
+
+
 @router.get("")
 def get_schema() -> dict[str, list[dict[str, Any]]]:
     return {"tables": fetch_schema_metadata()}
+
+
+@router.get("/summary")
+def get_schema_summary() -> dict[str, Any]:
+    return build_schema_summary(fetch_schema_metadata())
