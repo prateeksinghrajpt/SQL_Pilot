@@ -72,13 +72,13 @@ def _normalize_identifier(value: str | None) -> str:
     return value.strip('"`[]').lower()
 
 
-def _validate_select_statement(sql: str) -> str:
+def _validate_allowed_statement(sql: str) -> str:
     cleaned = _sanitize_sql(sql)
 
     if cleaned.count(";") > 1:
         raise HTTPException(
             status_code=400,
-            detail="Only a single SELECT statement is allowed for execution.",
+            detail="Only a single SELECT, INSERT, UPDATE, or DELETE statement is allowed for execution.",
         )
 
     try:
@@ -86,10 +86,11 @@ def _validate_select_statement(sql: str) -> str:
     except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
         raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
 
-    if not isinstance(parsed, exp.Select):
+    allowed_types = (exp.Select, exp.Insert, exp.Update, exp.Delete)
+    if not isinstance(parsed, allowed_types):
         raise HTTPException(
             status_code=400,
-            detail="Only SELECT queries are allowed in this phase.",
+            detail="Only SELECT, INSERT, UPDATE, and DELETE queries are allowed in this phase.",
         )
 
     try:
@@ -239,7 +240,7 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
 
 @router.post("/run")
 def run_sql(payload: RunSqlRequest) -> dict[str, Any]:
-    sql = _validate_select_statement(payload.sql)
+    sql = _validate_allowed_statement(payload.sql)
 
     with connect_db() as conn:
         cursor = conn.cursor()

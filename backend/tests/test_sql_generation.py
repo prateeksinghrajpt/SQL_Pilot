@@ -169,6 +169,58 @@ def test_run_sql_endpoint_allows_with_select_queries(monkeypatch):
     assert response.json()["rows"][0]["id"] == 1
 
 
+def test_run_sql_endpoint_executes_update_statement(monkeypatch):
+    from app.api.routes import sql as sql_routes
+
+    class FakeCursor:
+        def __init__(self):
+            self.description = [("rowcount",)]
+            self.fetchall_result = []
+
+        def execute(self, query):
+            return None
+
+        def fetchall(self):
+            return self.fetchall_result
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return self.cursor_obj
+
+    monkeypatch.setattr(sql_routes, "connect_db", lambda: FakeConnection())
+    monkeypatch.setattr(
+        sql_routes,
+        "fetch_schema_metadata",
+        lambda: [
+            {
+                "name": "customers",
+                "columns": [
+                    {"name": "id", "type": "bigint", "nullable": False, "is_primary_key": True},
+                    {"name": "status", "type": "text", "nullable": False, "is_primary_key": False},
+                ],
+                "primary_keys": ["id"],
+                "foreign_keys": [],
+            }
+        ],
+    )
+
+    response = client.post(
+        "/api/v1/sql/run",
+        json={"sql": "UPDATE customers SET status = 'active' WHERE id = 1;"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_run_sql_endpoint_executes_select_statement(monkeypatch):
     from app.api.routes import sql as sql_routes
 

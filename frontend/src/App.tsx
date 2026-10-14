@@ -153,8 +153,21 @@ export default function App() {
     }
   }
 
+  function isMutationSql(sql: string) {
+    return /^\s*(INSERT|UPDATE|DELETE|MERGE)\b/i.test(sql.trim());
+  }
+
   async function handleRunSql() {
     if (!generatedSql.trim()) return;
+
+    if (isMutationSql(generatedSql)) {
+      const confirmed = window.confirm(
+        "This SQL will modify existing data and may affect records in your database. Do you want to continue?"
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
 
     setError(null);
     setRunningSql(true);
@@ -296,6 +309,12 @@ export default function App() {
             </div>
           </form>
           {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
+          {generatedSql && isMutationSql(generatedSql) && (
+            <div className="notice error">
+              <span>⚠</span>
+              <p><strong>Data-changing query:</strong> this statement will update or delete records and may affect existing data.</p>
+            </div>
+          )}
           <div className="sql-editor-shell">
             <div className="sql-editor-header">
               <div className="sql-editor-brand">
