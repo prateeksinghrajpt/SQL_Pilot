@@ -105,8 +105,21 @@ export default function App() {
     }
   }
 
+  function isMutationSql(sql: string) {
+    return /^\s*(INSERT|UPDATE|DELETE|MERGE)\b/i.test(sql.trim());
+  }
+
   async function handleRunSql() {
     if (!generatedSql.trim()) return;
+
+    if (isMutationSql(generatedSql)) {
+      const confirmed = window.confirm(
+        "This SQL will modify existing data and may affect records in your database. Do you want to continue?"
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
 
     setError(null);
     setRunningSql(true);
@@ -119,13 +132,13 @@ export default function App() {
         body: JSON.stringify({ sql: generatedSql }),
       });
 
+      const result = await response.json().catch(() => ({}));
+
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail ?? "Could not execute SQL");
+        throw new Error(result.detail ?? "Could not execute SQL");
       }
 
-      const result = await response.json() as { rows: Record<string, unknown>[]; columns: string[] };
-      setQueryResult(result.rows);
+      setQueryResult(result.rows ?? []);
     } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "Unknown error");
     } finally {
@@ -159,74 +172,89 @@ export default function App() {
       <section className="main-panel">
         <header className="topbar">
           <div><span className="eyebrow">YOUR DATA, IN PLAIN ENGLISH</span><h1>Ask your data</h1></div>
-          <span className="phase-tag">PHASE 1 · FOUNDATION</span>
         </header>
         <div className="content">
-          <div className="welcome-icon" aria-hidden="true">✳</div>
-          <h2>What would you like to know?</h2>
-          <p className="subtitle">Describe a business question. The app will generate SQL for review, then you can edit and run it manually.</p>
-          <form className="query-box" onSubmit={handleSubmit}>
-            <label className="sr-only" htmlFor="question">Your data question</label>
-            <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)}
-              placeholder="e.g. Show the top 10 customers by total revenue…" rows={3} />
-            <div className="query-box-footer">
-              <span className="input-hint">Natural language → SQL draft</span>
-              <button className="submit-button" type="submit" disabled={!question.trim() || loading}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
-            </div>
-          </form>
-          {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
-          <div className="sql-editor-shell">
-            <div className="sql-editor-header">
-              <div className="sql-editor-brand">
-                <span className="editor-icon">&lt;/&gt;</span>
-                <span className="sql-editor-label">SQL</span>
+          <div className="workspace-shell">
+            <div className="workspace-main">
+              <div className="welcome-icon" aria-hidden="true">✳</div>
+              <h2>What would you like to know?</h2>
+              <p className="subtitle">Describe a business question. The app will generate SQL for review, then you can edit and run it manually.</p>
+              <form className="query-box" onSubmit={handleSubmit}>
+                <label className="sr-only" htmlFor="question">Your data question</label>
+                <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="e.g. Show the top 10 customers by total revenue…" rows={3} />
+                <div className="query-box-footer">
+                  <span className="input-hint">Natural language → SQL draft</span>
+                  <button className="submit-button" type="submit" disabled={!question.trim() || loading}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
+                </div>
+              </form>
+              {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
+              {generatedSql && isMutationSql(generatedSql) && (
+                <div className="notice error">
+                  <span>⚠</span>
+                  <p><strong>Data-changing query:</strong> this statement will update or delete records and may affect existing data.</p>
+                </div>
+              )}
+              <div className="sql-editor-shell">
+                <div className="sql-editor-header">
+                  <div className="sql-editor-brand">
+                    <span className="editor-icon">&lt;/&gt;</span>
+                    <span className="sql-editor-label">SQL</span>
+                  </div>
+                  <div className="sql-editor-actions">
+                    <button
+                      className="icon-button"
+                      type="button"
+                      onClick={() => setIsEditingSql((value) => !value)}
+                      aria-label="Edit SQL"
+                      disabled={!generatedSql.trim()}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      className="icon-button run-button"
+                      type="button"
+                      onClick={handleRunSql}
+                      disabled={runningSql || !generatedSql.trim()}
+                      aria-label={runningSql ? "Running SQL" : "Run SQL"}
+                    >
+                      {runningSql ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">▶</span>}
+                    </button>
+                  </div>
+                </div>
+                {generatedSql ? (
+                  isEditingSql ? (
+                    <textarea className="sql-editor" value={generatedSql} onChange={(event) => setGeneratedSql(event.target.value)} rows={10} />
+                  ) : (
+                    <pre className="sql-preview">{renderSqlTokens(generatedSql)}</pre>
+                  )
+                ) : (
+                  <div className="sql-placeholder">SQL draft will appear here</div>
+                )}
               </div>
-              <div className="sql-editor-actions">
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => setIsEditingSql((value) => !value)}
-                  aria-label="Edit SQL"
-                  disabled={!generatedSql.trim()}
-                >
-                  ✎
-                </button>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={handleRunSql}
-                  disabled={runningSql || !generatedSql.trim()}
-                  aria-label="Run SQL"
-                >
-                  ▶
-                </button>
-              </div>
-            </div>
-            {generatedSql ? (
-              isEditingSql ? (
-                <textarea className="sql-editor" value={generatedSql} onChange={(event) => setGeneratedSql(event.target.value)} rows={10} />
+              {queryResult ? (
+                <div className="results-box">
+                  <div className="results-header">
+                    <h3>Results</h3>
+                    <span>[{queryResult.length}]</span>
+                  </div>
+                  <pre>{JSON.stringify(queryResult, null, 2)}</pre>
+                </div>
               ) : (
-                <pre className="sql-preview">{renderSqlTokens(generatedSql)}</pre>
-              )
-            ) : (
-              <div className="sql-placeholder">SQL draft will appear here</div>
-            )}
-          </div>
-          {queryResult && (
-            <div className="notice results-box">
-              <span>Results</span>
-              <pre>{JSON.stringify(queryResult, null, 2)}</pre>
+                <div className="results-empty">Results will appear here.</div>
+              )}
+              <div className="section-label">TRY ASKING</div>
+              <div className="suggestions">
+                {examples.map((example) => (
+                  <button className="suggestion" type="button" key={example} onClick={() => setQuestion(example)}>
+                    <span>↗</span> {example}
+                  </button>
+                ))}
+              </div>
+              <div className="notice"><span>ⓘ</span><p>Use the draft below to review, edit, and run your SQL when you’re ready.</p></div>
             </div>
-          )}
-          <div className="section-label">TRY ASKING</div>
-          <div className="suggestions">
-            {examples.map((example) => (
-              <button className="suggestion" type="button" key={example} onClick={() => setQuestion(example)}>
-                <span>↗</span> {example}
-              </button>
-            ))}
+
           </div>
-          <div className="notice"><span>ⓘ</span><p><strong>Foundation build.</strong> This interface currently checks backend connectivity. It does not yet generate or execute SQL.</p></div>
         </div>
         <footer className="footer"><span>Built with FastAPI · React · PostgreSQL</span><a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API documentation ↗</a></footer>
       </section>
