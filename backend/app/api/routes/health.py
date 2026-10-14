@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
-from psycopg import OperationalError
+import sqlite3
 
-from app.db.connection import check_database_connection
+from fastapi import APIRouter, HTTPException
+
+from app.db import auth_store
 
 router = APIRouter(tags=["health"])
 
@@ -14,9 +15,9 @@ def health() -> dict[str, str]:
 
 @router.get("/ready")
 def readiness() -> dict[str, str]:
-    # Readiness: confirms the API can connect to PostgreSQL.
     try:
-        check_database_connection()
-    except (OperationalError, OSError) as exc:
-        raise HTTPException(status_code=503, detail="Database is not ready") from exc
-    return {"status": "ready", "database": "connected"}
+        with auth_store.connection():
+            pass
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=503, detail="Project storage is not ready") from exc
+    return {"status": "ready", "storage": "connected"}

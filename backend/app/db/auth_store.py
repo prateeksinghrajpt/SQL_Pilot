@@ -31,8 +31,9 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    encrypted_database_url BLOB NOT NULL,
     schema_snapshot TEXT NOT NULL,
+    data_path TEXT NOT NULL DEFAULT '',
+    source_files TEXT NOT NULL DEFAULT '[]',
     imported_at TEXT NOT NULL,
     allow_mutations INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -53,6 +54,15 @@ def connection() -> Iterator[sqlite3.Connection]:
     db.execute("PRAGMA foreign_keys = ON")
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
+    project_columns = {row[1] for row in db.execute("PRAGMA table_info(projects)").fetchall()}
+    if "data_path" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN data_path TEXT NOT NULL DEFAULT ''")
+    if "source_files" not in project_columns:
+        db.execute("ALTER TABLE projects ADD COLUMN source_files TEXT NOT NULL DEFAULT '[]'")
+    db.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)",
+        (utc_now(),),
+    )
     try:
         yield db
         db.commit()

@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -21,14 +23,13 @@ def test_health_endpoint() -> None:
     }
 
 
-def test_readiness_endpoint_reports_database_unavailable(monkeypatch) -> None:
+def test_readiness_endpoint_reports_project_storage_unavailable(monkeypatch) -> None:
     from app.api.routes import health
 
     def fail_connection() -> None:
-        from psycopg import OperationalError
-        raise OperationalError("database unavailable")
+        raise sqlite3.OperationalError("storage unavailable")
 
-    monkeypatch.setattr(health, "check_database_connection", fail_connection)
+    monkeypatch.setattr(health.auth_store, "connection", fail_connection)
     response = client.get("/api/v1/ready")
     assert response.status_code == 503
-    assert response.json()["detail"] == "Database is not ready"
+    assert response.json()["detail"] == "Project storage is not ready"

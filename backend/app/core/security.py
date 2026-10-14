@@ -5,10 +5,8 @@ import hashlib
 import secrets
 from typing import Any
 
-import base64
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import get_settings
@@ -49,34 +47,6 @@ def create_session(user_id: str) -> tuple[str, str]:
     return session_token, csrf_token
 
 
-def encrypt_database_url(database_url: str) -> bytes:
-    encoded_key = get_settings().credential_encryption_key
-    if not encoded_key:
-        raise HTTPException(status_code=503, detail="Project credential encryption is not configured")
-    try:
-        key = base64.urlsafe_b64decode(encoded_key.encode())
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Project credential encryption key is invalid") from exc
-    if len(key) != 32:
-        raise HTTPException(status_code=503, detail="Project credential encryption key must decode to 32 bytes")
-    nonce = secrets.token_bytes(12)
-    return nonce + AESGCM(key).encrypt(nonce, database_url.encode("utf-8"), b"sql-copilot-project-v1")
-
-
-def decrypt_database_url(encrypted: bytes) -> str:
-    encoded_key = get_settings().credential_encryption_key
-    if not encoded_key:
-        raise HTTPException(status_code=503, detail="Project credential encryption is not configured")
-    try:
-        key = base64.urlsafe_b64decode(encoded_key.encode())
-        if len(key) != 32:
-            raise ValueError("invalid key length")
-        nonce, ciphertext = encrypted[:12], encrypted[12:]
-        return AESGCM(key).decrypt(nonce, ciphertext, b"sql-copilot-project-v1").decode("utf-8")
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Project credentials could not be decrypted") from exc
-
-
 def get_current_user(request: Request) -> dict[str, Any]:
     import time
 
@@ -102,6 +72,8 @@ def require_csrf(request: Request, user: dict[str, Any]) -> None:
     stored_hash = getattr(request.state, "session_csrf_hash", "")
     if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed")
+    if not hmac.compare_digest(token_hash(header_token), stored_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed")
 
 
 def get_current_user_with_csrf(
@@ -110,8 +82,6 @@ def get_current_user_with_csrf(
 ) -> dict[str, Any]:
     require_csrf(request, user)
     return user
-    if not hmac.compare_digest(token_hash(header_token), stored_hash):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed")
 
 
 def set_session_cookies(response: Any, session_token: str, csrf_token: str) -> None:

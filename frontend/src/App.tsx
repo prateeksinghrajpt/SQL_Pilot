@@ -8,6 +8,8 @@ type Project = {
   schema: { name: string; columns: { name: string; type?: string; is_primary_key?: boolean }[] }[];
   imported_at: string;
   allow_mutations: boolean;
+  source_files: string[];
+  row_count: number;
   created_at: string;
 };
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -87,7 +89,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
-  const [databaseUrl, setDatabaseUrl] = useState("");
+  const [importFiles, setImportFiles] = useState<File[]>([]);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
@@ -192,10 +194,12 @@ export default function App() {
     setProjectError(null);
     setProjectBusy(true);
     try {
+      const formData = new FormData();
+      formData.set("name", projectName);
+      importFiles.forEach((file) => formData.append("files", file));
       const response = await apiRequest("/api/v1/projects", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: projectName, database_url: databaseUrl }),
+        body: formData,
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail ?? "Could not import database schema");
@@ -203,7 +207,7 @@ export default function App() {
       setProjects((current) => [createdProject, ...current]);
       setActiveProjectId(createdProject.id);
       setProjectName("");
-      setDatabaseUrl("");
+      setImportFiles([]);
       setShowProjectForm(false);
       setGeneratedSql("");
       setQueryResult(null);
@@ -403,9 +407,10 @@ export default function App() {
             <form className="project-form" onSubmit={handleCreateProject}>
               <label htmlFor="project-name">Project name</label>
               <input id="project-name" value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project 1" required maxLength={80} />
-              <label htmlFor="database-url">PostgreSQL connection URL</label>
-              <input id="database-url" type="password" autoComplete="new-password" value={databaseUrl} onChange={(event) => setDatabaseUrl(event.target.value)} placeholder="postgresql://user:password@host/database" required />
-              <button className="submit-button" type="submit" disabled={projectBusy || !projectName.trim() || !databaseUrl.trim()}>{projectBusy ? "Importing schema…" : "Connect and import"}</button>
+              <label htmlFor="project-files">Schema and data files</label>
+              <input id="project-files" type="file" multiple accept=".csv,.json,.xlsx,.txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => setImportFiles(Array.from(event.target.files ?? []))} required />
+              <span className="project-upload-hint">CSV, JSON, and Excel stay local. Documents and images are sent to your configured model for extraction.</span>
+              <button className="submit-button" type="submit" disabled={projectBusy || !projectName.trim() || importFiles.length === 0}>{projectBusy ? "Importing schema and data…" : `Import ${importFiles.length || "files"}`}</button>
             </form>
           )}
           {projectError && <div className="project-error">{projectError}</div>}
@@ -416,6 +421,8 @@ export default function App() {
                 <button className="project-action" type="button" onClick={handleRefreshSchema} disabled={projectBusy} aria-label="Refresh project schema" title="Refresh schema">↻</button>
               </div>
               <span className="schema-refresh-time">Imported {new Date(activeProject.imported_at).toLocaleString()}</span>
+              <span className="schema-refresh-time">{activeProject.source_files.join(", ")}</span>
+              <span className="schema-refresh-time">{activeProject.row_count.toLocaleString()} imported rows</span>
               {activeProject.schema.map((table) => (
                 <details className="project-table" key={table.name}>
                   <summary>{table.name}</summary>
@@ -528,16 +535,16 @@ export default function App() {
               <div className="notice"><span>ⓘ</span><p>SQL generation and validation use the imported schema for {activeProject.name}.</p></div>
               </> : (
                 <div className="project-empty">
-                  <h2>Connect a database project</h2>
-                  <p>Import a PostgreSQL schema to start generating queries with project-specific context.</p>
-                  <button className="submit-button" type="button" onClick={() => setShowProjectForm(true)}>Import database</button>
+                  <h2>Import a data project</h2>
+                  <p>Upload schema and data files. SQL is generated from the imported schema and runs only against this project’s imported dataset.</p>
+                  <button className="submit-button" type="button" onClick={() => setShowProjectForm(true)}>Import schema and data</button>
                 </div>
               )}
             </div>
 
           </div>
         </div>
-        <footer className="footer"><span>Built with FastAPI · React · PostgreSQL</span><a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API documentation ↗</a></footer>
+        <footer className="footer"><span>FastAPI · DuckDB · AI schema extraction</span><a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API documentation ↗</a></footer>
       </section>
     </main>
   );

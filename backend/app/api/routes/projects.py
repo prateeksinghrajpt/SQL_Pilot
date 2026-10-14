@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
+from app.core.data_import import MAX_FILE_BYTES, MAX_TOTAL_BYTES
 from app.core.projects import (
     create_project,
     delete_project,
@@ -19,11 +20,6 @@ from app.core.security import get_current_user, get_current_user_with_csrf
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-class CreateProjectRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    database_url: str = Field(min_length=10, max_length=2048)
-
-
 class UpdateProjectRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     allow_mutations: bool | None = None
@@ -35,17 +31,29 @@ def get_projects(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, 
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def post_project(
-    payload: CreateProjectRequest,
+async def post_project(
+    name: str = Form(min_length=1, max_length=80),
+    files: list[UploadFile] = File(min_length=1, max_length=10),
     user: dict[str, Any] = Depends(get_current_user_with_csrf),
 ) -> dict[str, Any]:
-    project = create_project(user["id"], payload.name, payload.database_url)
+    uploads = []
+    total_size = 0
+    for uploaded_file in files:
+        content = await uploaded_file.read(MAX_FILE_BYTES + 1)
+        await uploaded_file.close()
+        if len(content) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"File '{uploaded_file.filename}' exceeds the 20 MB limit")
+        total_size += len(content)
+        if total_size > MAX_TOTAL_BYTES:
+            raise HTTPException(status_code=413, detail="The total upload size exceeds 50 MB")
+        uploads.append((uploaded_file.filename or "upload", uploaded_file.content_type or "", content))
+    project = create_project(user["id"], name, uploads)
     return {"project": public_project(project)}
 
 
 @router.get("/{project_id}")
 def get_project(project_id: str, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    return {"project": public_project(get_owned_project(user["id"], project_id, include_database_url=False))}
+    return {"project": public_project(get_owned_project(user["id"], project_id))}
 
 
 @router.patch("/{project_id}")

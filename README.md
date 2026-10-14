@@ -1,83 +1,59 @@
 # SQL Copilot
 
-A schema-grounded PostgreSQL assistant. Users create private accounts and named database projects, import schema snapshots, generate SQL with project-specific context, review it, and execute it under server-side policy.
+A private, file-based SQL workspace. Each user creates named projects, uploads schema and data files, and asks questions about the imported dataset. The LLM uses the project schema to generate DuckDB SQL; the query executes only against that project's local DuckDB file.
 
-## Start locally
+## Run locally
 
-Requirements: Docker Desktop, Python 3.12, and Node.js 20+.
+Requirements: Docker Desktop, Python 3.12+, and Node.js 20+.
 
 ```powershell
 Copy-Item .env.example .env
-```
-
-Generate a unique credential-encryption key:
-
-```powershell
-python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
-```
-
-Set the output as `CREDENTIAL_ENCRYPTION_KEY` in `.env`. Replace both PostgreSQL passwords. `ALLOW_PRIVATE_DATABASE_HOSTS=true` is enabled in the example for local Docker databases; set it to `false` when importing only public database hosts. The application metadata, accounts, sessions, and encrypted project connection strings are stored in a separate persistent SQLite volume.
-
-Start the services:
-
-```powershell
 docker compose up --build
 ```
 
-Open the app at http://localhost:5173. Register an account, choose **Import database**, and provide a project name and PostgreSQL connection URL. For the bundled database from inside Docker, use a URL like:
+Open http://localhost:5173, register an account, choose **Import schema and data**, name the project, and upload one or more files. No database connection URL or database server is required.
 
-```text
-postgresql://sqlcopilot:YOUR_POSTGRES_PASSWORD@db:5432/sqlcopilot
-```
+`OPENAI_API_KEY` is needed for natural-language SQL generation and for extraction from documents/images. CSV, JSON, and Excel files are parsed directly. PDF, DOCX, TXT, Markdown, and supported image files use the LLM to extract a structured schema and rows; those requests incur model usage. Imported projects and the account database persist in the `app_data` Docker volume.
 
-The connection URL is used for schema import and stored encrypted; it is not returned by the API. Choose a project to use its saved schema snapshot. Use **Refresh schema** when its tables or columns change.
+## Supported imports
 
-Set `OPENAI_API_KEY` in `.env` to enable natural-language SQL generation. SQL validation and database connection can be exercised without a model key.
+- `.csv`: one table per file, with the first row as column names.
+- `.json`: a row-object array, an object containing rows, a name-to-row-list map, or a `{ "tables": [...] }` schema/data structure.
+- `.xlsx`: one table per worksheet, with the first row as column names.
+- `.pdf`, `.docx`, `.txt`, `.md`, `.png`, `.jpg`, `.jpeg`, `.webp`: schema and tabular data extracted as structured JSON by the configured model.
 
-## Tests
+Uploads are limited to 10 files, 20 MB per file, and 50 MB total. Review AI-extracted data before relying on it; unclear values may be omitted or interpreted incorrectly.
 
-Run the backend tests:
-
-```powershell
-docker compose exec backend python -m pytest -q
-```
-
-The tests use temporary SQLite storage and mocked target database connections. Project URL validation tests cover malformed URLs and private-host blocking. To run the schema importer against a real server, set `TEST_DATABASE_URL` to a disposable PostgreSQL database; the integration test creates and removes two uniquely named tables. Never use production credentials or data for tests.
-
-Build the frontend:
+## Tests and build
 
 ```powershell
-cd frontend
+cd backend
+..\venv\Scripts\python.exe -m pytest -q
+cd ..\frontend
 npm run build
-```
-
-Validate the Compose file:
-
-```powershell
+cd ..
 docker compose config --quiet
 ```
 
-## Security model
+Tests use temporary control-plane databases and per-project DuckDB files; no external database is required.
 
-- Passwords are stored as salted scrypt hashes. Sessions use random opaque tokens stored only as hashes, HttpOnly session cookies, a separate CSRF cookie/header, and a 12-hour expiry.
-- Projects are private to their owner. Project IDs are resolved with owner-scoped queries on every project, schema, and SQL request.
-- Connection strings are encrypted with AES-GCM using `CREDENTIAL_ENCRYPTION_KEY`; losing or changing the key makes saved credentials undecryptable.
-- PostgreSQL URLs are restricted to PostgreSQL schemes. Private or local DNS targets are rejected unless `ALLOW_PRIVATE_DATABASE_HOSTS` is enabled. This development exception should not be enabled on a public deployment; also use network egress controls in production.
-- SQL is parsed as one statement and restricted to `SELECT`, `INSERT`, `UPDATE`, and `DELETE`. `UPDATE` and `DELETE` require a `WHERE` clause.
-- Mutations are disabled per project by default. Enabling them requires a project setting and an explicit run acknowledgement. This is not a substitute for database permissions or user authorization.
-- `SELECT` runs in a read-only transaction, has a statement timeout, and returns at most `MAX_RESULT_ROWS` rows.
+## Isolation and execution
 
-This is a portfolio/demo implementation, not a production identity or secret-management service. Before exposing it to untrusted users, add rate limiting, audit logging, managed key rotation, stronger outbound-network isolation, backups, and operational monitoring. Use TLS and set `COOKIE_SECURE=true` for HTTPS deployments.
+- Authentication uses salted Argon2id password hashes, HttpOnly session cookies, and CSRF validation on state-changing requests.
+- Projects are private to their owner. Project IDs are checked against the current user before schema, data, or SQL operations.
+- Uploaded files are parsed and stored in a dedicated DuckDB file for each project. The source files’ contents are not sent to an LLM for CSV/JSON/Excel imports; document and image imports require LLM extraction.
+- DuckDB external file/network access is disabled for project query connections. SQL is parsed as one statement and limited to `SELECT`, `INSERT`, `UPDATE`, and `DELETE`; `UPDATE` and `DELETE` require a `WHERE` clause.
+- Mutations are disabled per project by default. Enabling them requires a project setting and explicit run acknowledgement.
+- `SELECT` uses a read-only DuckDB connection, and responses are capped by `MAX_RESULT_ROWS`.
+
+This is a portfolio/demo implementation. Treat uploaded data as sensitive: local control-plane and DuckDB files are stored unencrypted on disk. Before exposing the app to untrusted users, add encrypted-at-rest dataset storage, upload malware scanning, rate limits, audit logging, retention controls, and operational monitoring. Use HTTPS and set `COOKIE_SECURE=true` in production.
 
 ## Configuration
 
-| Variable | Purpose |
-| --- | --- |
-| `CREDENTIAL_ENCRYPTION_KEY` | Base64url-encoded 32-byte key used to encrypt project database URLs. Keep stable and secret. |
-| `APP_DATABASE_PATH` | SQLite control-plane database path; Compose uses a persistent Docker volume. |
-| `COOKIE_SECURE` | Set `true` when the app is served over HTTPS. |
-| `ALLOW_PRIVATE_DATABASE_HOSTS` | Allow local/private PostgreSQL hosts for trusted development only. |
-| `OPENAI_API_KEY` | API key used for SQL generation. |
-| `OPENAI_MODEL` | Model name; defaults to `gpt-4o-mini`. |
+- `OPENAI_API_KEY`: required for SQL generation and extraction from documents/images.
+- `OPENAI_MODEL`: model name; defaults to `gpt-4o-mini`.
+- `APP_DATABASE_PATH`: SQLite account/project metadata file; Docker Compose stores it under the persistent `app_data` volume.
+- `MAX_RESULT_ROWS`: maximum returned rows; defaults to 200.
+- `COOKIE_SECURE`: set to `true` when served over HTTPS.
 
-Deleting volumes with `docker compose down -v` removes the local PostgreSQL data and the account/project control-plane database, including saved schema snapshots and encrypted credentials.
+`docker compose down -v` deletes the local account/project metadata and all imported project datasets.

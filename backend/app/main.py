@@ -11,7 +11,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="AI-Powered SQL Copilot API",
-    description="Authenticated, schema-grounded SQL projects for PostgreSQL.",
+    description="Authenticated SQL projects built from uploaded schemas and data files.",
     version="0.1.0",
 )
 

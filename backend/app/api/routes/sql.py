@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import duckdb
 import sqlglot
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlglot import exp
 
-from app.core.projects import connect_project_db, get_owned_project
+from app.core.projects import get_owned_project
 from app.core.config import get_settings
 from app.core.security import get_current_user_with_csrf
 
@@ -75,7 +76,7 @@ def _validate_allowed_statement(sql: str, schema_tables: list[dict[str, Any]]) -
     cleaned = _sanitize_sql(sql)
 
     try:
-        statements = [statement for statement in sqlglot.parse(cleaned, read="postgres") if statement is not None]
+        statements = [statement for statement in sqlglot.parse(cleaned, read="duckdb") if statement is not None]
     except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
         raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
     if len(statements) != 1:
@@ -112,8 +113,8 @@ def _validate_allowed_statement(sql: str, schema_tables: list[dict[str, Any]]) -
     for table_node in parsed.find_all(exp.Table):
         table_name = _normalize_identifier(table_node.name)
         schema_name = _normalize_identifier(table_node.db)
-        if schema_name and schema_name != "public":
-            raise HTTPException(status_code=400, detail="Only tables in the imported public schema are allowed.")
+        if schema_name and schema_name != "main":
+            raise HTTPException(status_code=400, detail="Only tables in the imported project dataset are allowed.")
         if not table_name or table_name in cte_aliases:
             continue
         tables_in_query.append(table_name)
@@ -192,14 +193,15 @@ def generate_sql(
     payload: GenerateSqlRequest,
     user: dict[str, Any] = Depends(get_current_user_with_csrf),
 ) -> dict[str, str]:
-    project = get_owned_project(user["id"], payload.project_id, include_database_url=False)
+    project = get_owned_project(user["id"], payload.project_id)
     client = _get_openai_client()
     settings = get_settings()
     schema_context = _format_schema_context(project["schema_snapshot"])
 
     prompt = (
-        "Convert the user's request to a valid PostgreSQL query using the schema below. "
-        "Use the exact table and column names from the schema. Return only the SQL statement and no extra explanation.\n\n"
+        "Convert the user's request to a valid DuckDB SQL query using only the imported project schema below. "
+        "Use the exact table and column names from the schema. Do not assume rows or tables outside this project. "
+        "Return only the SQL statement and no extra explanation.\n\n"
         f"Schema:\n{schema_context}\n\nQuestion: {payload.question}"
     )
 
@@ -209,8 +211,8 @@ def generate_sql(
             {
                 "role": "system",
                 "content": (
-                    "You generate PostgreSQL SQL from natural-language questions. "
-                    "Use the provided schema metadata exactly and return only a SQL statement."
+                    "You generate DuckDB SQL from natural-language questions. "
+                    "Use only the imported project tables and provided schema metadata; return only a SQL statement."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -238,11 +240,15 @@ def run_sql(
         raise HTTPException(status_code=409, detail="Explicit acknowledgement is required for data-changing queries.")
     settings = get_settings()
 
-    with connect_project_db(project["database_url"]) as conn:
+    conn = None
+    try:
+        conn = duckdb.connect(
+            project["data_path"],
+            read_only=not is_mutation,
+            config={"enable_external_access": "false"},
+        )
         cursor = conn.cursor()
-        if isinstance(statement, exp.Select):
-            cursor.execute("SET TRANSACTION READ ONLY")
-        cursor.execute("SELECT set_config('statement_timeout', %s, true)", (f"{settings.statement_timeout_ms}ms",))
+        cursor.execute("SET threads = 2")
         cursor.execute(sql)
 
         if cursor.description:
@@ -257,6 +263,11 @@ def run_sql(
             records = []
             row_count = getattr(cursor, "rowcount", 0)
             truncated = False
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail="The query could not run against this project's imported data.") from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
     response: dict[str, Any] = {"sql": sql, "columns": columns, "rows": records}
     if row_count is not None:

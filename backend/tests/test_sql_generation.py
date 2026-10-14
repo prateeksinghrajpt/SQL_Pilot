@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import duckdb
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -26,17 +27,28 @@ PROJECT_SCHEMA = [
 
 
 @pytest.fixture(autouse=True)
-def authenticated_project(monkeypatch):
+def authenticated_project(monkeypatch, tmp_path):
+    data_path = str(tmp_path / "project.duckdb")
+    with duckdb.connect(data_path, config={"enable_external_access": "false"}) as database:
+        database.execute("CREATE TABLE customers (id BIGINT, name VARCHAR, email VARCHAR, status VARCHAR)")
+        database.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?, ?)",
+            [
+                (1, "Alice", "alice@example.com", "new"),
+                (2, "Bob", "bob@example.com", "new"),
+                (3, "Cara", "cara@example.com", "new"),
+            ],
+        )
     project = {
         "id": "project-1",
         "owner_id": USER["id"],
         "name": "Test project",
-        "database_url": "postgresql://demo:secret@example.com/demo",
+        "data_path": data_path,
         "schema_snapshot": PROJECT_SCHEMA,
         "allow_mutations": False,
     }
 
-    def get_project(owner_id: str, project_id: str, *, include_database_url: bool = True):
+    def get_project(owner_id: str, project_id: str):
         if owner_id != USER["id"] or project_id != project["id"]:
             raise HTTPException(status_code=404, detail="Project not found")
         return {**project, "schema_snapshot": PROJECT_SCHEMA}
@@ -45,34 +57,6 @@ def authenticated_project(monkeypatch):
     monkeypatch.setattr(sql_routes, "get_owned_project", get_project)
     yield project
     app.dependency_overrides.clear()
-
-
-class FakeCursor:
-    def __init__(self, description=None, rows=None, rowcount=0):
-        self.description = description
-        self.rows = rows or []
-        self.rowcount = rowcount
-        self.executed = []
-
-    def execute(self, query, params=None):
-        self.executed.append((query, params))
-
-    def fetchmany(self, size):
-        return self.rows[:size]
-
-
-class FakeConnection:
-    def __init__(self, cursor):
-        self.cursor_value = cursor
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cursor_value
 
 
 def test_generate_sql_endpoint_returns_sql(monkeypatch):
@@ -152,23 +136,30 @@ def test_run_sql_endpoint_rejects_unknown_table_or_column():
     assert "missing_field" in response.json()["detail"]
 
 
-def test_run_sql_rejects_tables_outside_imported_public_schema():
+def test_run_sql_rejects_tables_outside_imported_project_dataset():
     response = client.post(
         "/api/v1/sql/run",
         json={"project_id": "project-1", "sql": "SELECT id FROM private.customers;"},
     )
 
     assert response.status_code == 400
-    assert "public schema" in response.json()["detail"]
+    assert "project dataset" in response.json()["detail"]
+
+
+def test_run_sql_rejects_external_file_table_functions():
+    response = client.post(
+        "/api/v1/sql/run",
+        json={"project_id": "project-1", "sql": "SELECT * FROM read_csv('/etc/passwd');"},
+    )
+
+    assert response.status_code == 400
 
 
 def test_run_sql_endpoint_allows_with_select_queries(monkeypatch):
-    cursor = FakeCursor(description=[("id",), ("name",)], rows=[(1, "Alice")])
-    monkeypatch.setattr(sql_routes, "connect_project_db", lambda database_url: FakeConnection(cursor))
     monkeypatch.setattr(
         sql_routes,
         "get_settings",
-        lambda: SimpleNamespace(statement_timeout_ms=5000, max_result_rows=200),
+        lambda: SimpleNamespace(max_result_rows=200),
     )
     response = client.post(
         "/api/v1/sql/run",
@@ -180,7 +171,7 @@ def test_run_sql_endpoint_allows_with_select_queries(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["rows"][0]["id"] == 1
-    assert cursor.executed[0][0] == "SET TRANSACTION READ ONLY"
+    assert response.json()["rows"][0]["name"] == "Alice"
 
 
 def test_run_sql_requires_project_mutation_policy(authenticated_project):
@@ -199,7 +190,7 @@ def test_run_sql_requires_project_mutation_policy(authenticated_project):
 
 def test_run_sql_requires_acknowledgement_for_mutations(monkeypatch, authenticated_project):
     authenticated_project["allow_mutations"] = True
-    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(statement_timeout_ms=5000, max_result_rows=200))
+    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(max_result_rows=200))
     response = client.post(
         "/api/v1/sql/run",
         json={"project_id": "project-1", "sql": "UPDATE customers SET status = 'active' WHERE id = 1;"},
@@ -224,27 +215,23 @@ def test_run_sql_rejects_full_table_mutations():
 
 def test_run_sql_executes_acknowledged_project_mutation(monkeypatch, authenticated_project):
     authenticated_project["allow_mutations"] = True
-    cursor = FakeCursor(rowcount=1)
-    monkeypatch.setattr(sql_routes, "connect_project_db", lambda database_url: FakeConnection(cursor))
-    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(statement_timeout_ms=5000, max_result_rows=200))
+    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(max_result_rows=200))
     response = client.post(
         "/api/v1/sql/run",
         json={
             "project_id": "project-1",
-            "sql": "UPDATE customers SET status = 'active' WHERE id = 1;",
+            "sql": "UPDATE customers SET status = 'active' WHERE id = 1 RETURNING id;",
             "acknowledge_mutation": True,
         },
     )
 
     assert response.status_code == 200
     assert response.json()["row_count"] == 1
-    assert cursor.executed[-1][0].startswith("UPDATE")
+    assert response.json()["rows"] == [{"id": 1}]
 
 
 def test_run_sql_caps_project_query_results(monkeypatch):
-    cursor = FakeCursor(description=[("id",)], rows=[(1,), (2,), (3,)])
-    monkeypatch.setattr(sql_routes, "connect_project_db", lambda database_url: FakeConnection(cursor))
-    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(statement_timeout_ms=5000, max_result_rows=2))
+    monkeypatch.setattr(sql_routes, "get_settings", lambda: SimpleNamespace(max_result_rows=2))
     response = client.post(
         "/api/v1/sql/run",
         json={"project_id": "project-1", "sql": "SELECT id FROM customers;"},
