@@ -24,10 +24,16 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://sqlcopilot:change_me_to_a_local_dev_password@db:5432/sqlcopilot}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      APP_DATABASE_PATH: /data/sql-copilot.sqlite3
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOW_PRIVATE_DATABASE_HOSTS: ${ALLOW_PRIVATE_DATABASE_HOSTS:-true}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-}
     volumes:
       - ./backend:/app
+      - app_data:/data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -49,4 +55,5 @@ services:
 
 volumes:
   postgres_data:
+  app_data:
   frontend_node_modules:
