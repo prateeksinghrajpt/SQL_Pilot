@@ -1,36 +1,17 @@
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-sqlcopilot}
-      POSTGRES_USER: ${POSTGRES_USER:-sqlcopilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_to_a_local_dev_password}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sqlcopilot} -d ${POSTGRES_DB:-sqlcopilot}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   backend:
     build: ./backend
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://sqlcopilot:change_me_to_a_local_dev_password@db:5432/sqlcopilot}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      APP_DATABASE_PATH: /data/sql-copilot.sqlite3
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     volumes:
       - ./backend:/app
-    depends_on:
-      db:
-        condition: service_healthy
+      - app_data:/data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
@@ -48,5 +29,5 @@ services:
     command: npm run dev -- --host 0.0.0.0
 
 volumes:
-  postgres_data:
+  app_data:
   frontend_node_modules:

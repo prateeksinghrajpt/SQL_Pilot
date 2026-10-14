@@ -3,36 +3,36 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import duckdb
 import sqlglot
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlglot import exp
 
-from app.api.routes.schema import fetch_schema_metadata
+from app.core.projects import get_owned_project
 from app.core.config import get_settings
+from app.core.security import get_current_user_with_csrf
 
 try:
     from openai import OpenAI
 except Exception:  # pragma: no cover
     OpenAI = None
 
-try:
-    import psycopg
-except Exception:  # pragma: no cover
-    psycopg = None
-
 router = APIRouter(prefix="/sql", tags=["sql"])
 
 
 class GenerateSqlRequest(BaseModel):
+    project_id: str = Field(min_length=1)
     question: str = Field(..., min_length=3)
 
 
 class RunSqlRequest(BaseModel):
+    project_id: str = Field(min_length=1)
     sql: str = Field(..., min_length=6)
+    acknowledge_mutation: bool = False
 
 
-def _get_openai_client() -> OpenAI:
+def _get_openai_client() -> Any:
     settings = get_settings()
     if not settings.openai_api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
@@ -47,12 +47,12 @@ def _normalize_sql_text(sql: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned)
     cleaned = cleaned.strip()
 
-    if cleaned.lower().startswith(("select", "with")):
+    if cleaned.lower().startswith(("select", "with", "insert", "update", "delete")):
         return cleaned
 
-    match = re.search(r"(SELECT\b.*?;?|WITH\b.*?;?)", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    match = re.search(r"\b(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b.*", cleaned, flags=re.IGNORECASE | re.DOTALL)
     if match:
-        return match.group(1).strip()
+        return match.group(0).strip()
 
     return cleaned
 
@@ -72,19 +72,16 @@ def _normalize_identifier(value: str | None) -> str:
     return value.strip('"`[]').lower()
 
 
-def _validate_allowed_statement(sql: str) -> str:
+def _validate_allowed_statement(sql: str, schema_tables: list[dict[str, Any]]) -> tuple[str, exp.Expression]:
     cleaned = _sanitize_sql(sql)
 
-    if cleaned.count(";") > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Only a single SELECT, INSERT, UPDATE, or DELETE statement is allowed for execution.",
-        )
-
     try:
-        parsed = sqlglot.parse_one(cleaned, read="postgres")
+        statements = [statement for statement in sqlglot.parse(cleaned, read="duckdb") if statement is not None]
     except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
         raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
+    if len(statements) != 1:
+        raise HTTPException(status_code=400, detail="Only one SQL statement is allowed for execution.")
+    parsed = statements[0]
 
     allowed_types = (exp.Select, exp.Insert, exp.Update, exp.Delete)
     if not isinstance(parsed, allowed_types):
@@ -92,11 +89,8 @@ def _validate_allowed_statement(sql: str) -> str:
             status_code=400,
             detail="Only SELECT, INSERT, UPDATE, and DELETE queries are allowed.",
         )
-
-    try:
-        schema_tables = fetch_schema_metadata()
-    except Exception:
-        return cleaned
+    if isinstance(parsed, (exp.Update, exp.Delete)) and parsed.args.get("where") is None:
+        raise HTTPException(status_code=400, detail="UPDATE and DELETE statements must include a WHERE clause.")
 
     schema_lookup: dict[str, set[str]] = {}
     for table in schema_tables:
@@ -118,6 +112,9 @@ def _validate_allowed_statement(sql: str) -> str:
     alias_map: dict[str, str] = {}
     for table_node in parsed.find_all(exp.Table):
         table_name = _normalize_identifier(table_node.name)
+        schema_name = _normalize_identifier(table_node.db)
+        if schema_name and schema_name != "main":
+            raise HTTPException(status_code=400, detail="Only tables in the imported project dataset are allowed.")
         if not table_name or table_name in cte_aliases:
             continue
         tables_in_query.append(table_name)
@@ -161,7 +158,7 @@ def _validate_allowed_statement(sql: str) -> str:
                 detail=f"Column '{column_name}' is ambiguous across the selected tables.",
             )
 
-    return cleaned
+    return cleaned, parsed
 
 
 def _format_schema_context(tables: list[dict[str, Any]]) -> str:
@@ -191,26 +188,20 @@ def _format_schema_context(tables: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def connect_db():
-    settings = get_settings()
-    if psycopg is None:
-        raise HTTPException(status_code=500, detail="psycopg is not installed")
-    return psycopg.connect(settings.database_url, connect_timeout=3)
-
-
 @router.post("/generate")
-def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
+def generate_sql(
+    payload: GenerateSqlRequest,
+    user: dict[str, Any] = Depends(get_current_user_with_csrf),
+) -> dict[str, str]:
+    project = get_owned_project(user["id"], payload.project_id)
     client = _get_openai_client()
     settings = get_settings()
-    try:
-        schema_tables = fetch_schema_metadata()
-    except Exception:
-        schema_tables = []
-    schema_context = _format_schema_context(schema_tables)
+    schema_context = _format_schema_context(project["schema_snapshot"])
 
     prompt = (
-        "Convert the user's request to a valid PostgreSQL query using the schema below. "
-        "Use the exact table and column names from the schema. Return only the SQL statement and no extra explanation.\n\n"
+        "Convert the user's request to a valid DuckDB SQL query using only the imported project schema below. "
+        "Use the exact table and column names from the schema. Do not assume rows or tables outside this project. "
+        "Return only the SQL statement and no extra explanation.\n\n"
         f"Schema:\n{schema_context}\n\nQuestion: {payload.question}"
     )
 
@@ -220,8 +211,8 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
             {
                 "role": "system",
                 "content": (
-                    "You generate PostgreSQL SQL from natural-language questions. "
-                    "Use the provided schema metadata exactly and return only a SQL statement."
+                    "You generate DuckDB SQL from natural-language questions. "
+                    "Use only the imported project tables and provided schema metadata; return only a SQL statement."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -236,24 +227,51 @@ def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
 
 
 @router.post("/run")
-def run_sql(payload: RunSqlRequest) -> dict[str, Any]:
-    sql = _validate_allowed_statement(payload.sql)
+def run_sql(
+    payload: RunSqlRequest,
+    user: dict[str, Any] = Depends(get_current_user_with_csrf),
+) -> dict[str, Any]:
+    project = get_owned_project(user["id"], payload.project_id)
+    sql, statement = _validate_allowed_statement(payload.sql, project["schema_snapshot"])
+    is_mutation = isinstance(statement, (exp.Insert, exp.Update, exp.Delete))
+    if is_mutation and not project["allow_mutations"]:
+        raise HTTPException(status_code=403, detail="Data-changing queries are disabled for this project.")
+    if is_mutation and not payload.acknowledge_mutation:
+        raise HTTPException(status_code=409, detail="Explicit acknowledgement is required for data-changing queries.")
+    settings = get_settings()
 
-    with connect_db() as conn:
+    conn = None
+    try:
+        conn = duckdb.connect(
+            project["data_path"],
+            read_only=not is_mutation,
+            config={"enable_external_access": "false"},
+        )
         cursor = conn.cursor()
+        cursor.execute("SET threads = 2")
         cursor.execute(sql)
 
         if cursor.description:
             columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
+            rows = cursor.fetchmany(settings.max_result_rows + 1)
+            truncated = len(rows) > settings.max_result_rows
+            rows = rows[:settings.max_result_rows]
             records = [dict(zip(columns, row, strict=False)) for row in rows]
-            row_count = len(rows)
+            row_count = len(records)
         else:
             columns = []
             records = []
             row_count = getattr(cursor, "rowcount", 0)
+            truncated = False
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail="The query could not run against this project's imported data.") from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
     response: dict[str, Any] = {"sql": sql, "columns": columns, "rows": records}
     if row_count is not None:
         response["row_count"] = row_count
+    if truncated:
+        response["truncated"] = True
     return response
