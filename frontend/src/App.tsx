@@ -75,13 +75,6 @@ export default function App() {
   const [isEditingSql, setIsEditingSql] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [schemaSummary, setSchemaSummary] = useState<SchemaSummary | null>(null);
-  const [requestInspector, setRequestInspector] = useState<{
-    method: string;
-    status: number;
-    url: string;
-    headers: Record<string, string>;
-    body: unknown;
-  } | null>(null);
   const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -176,39 +169,23 @@ export default function App() {
       }
     }
 
-    const url = `${API_BASE_URL}/api/v1/sql/run`;
     setError(null);
     setRunningSql(true);
     setQueryResult(null);
-    setRequestInspector(null);
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(`${API_BASE_URL}/api/v1/sql/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sql: generatedSql }),
       });
 
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
-
-      const payload = await response.json().catch(() => ({}));
+      const result = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Could not execute SQL");
+        throw new Error(result.detail ?? "Could not execute SQL");
       }
 
-      setRequestInspector({
-        method: "POST",
-        status: response.status,
-        url,
-        headers: responseHeaders,
-        body: { sql: generatedSql },
-      });
-
-      const result = payload as { rows: Record<string, unknown>[]; columns: string[] };
       setQueryResult(result.rows ?? []);
     } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "Unknown error");
@@ -399,32 +376,6 @@ export default function App() {
               <div className="notice"><span>ⓘ</span><p>Use the draft below to review, edit, and run your SQL when you’re ready.</p></div>
             </div>
 
-            {requestInspector && (
-              <aside className="inspector-panel">
-                <div className="inspector-header">
-                  <div className="inspector-name">{requestInspector.method}</div>
-                  <div className="inspector-tabs">
-                    <span className="tab active">General</span>
-                    <span className="tab">Headers</span>
-                    <span className="tab">Payload</span>
-                    <span className="tab">Preview</span>
-                    <span className="tab">Response</span>
-                  </div>
-                </div>
-                <div className="inspector-content">
-                  <div className="inspector-row"><span>Request URL</span><code>{requestInspector.url}</code></div>
-                  <div className="inspector-row"><span>Request Method</span><code>{requestInspector.method}</code></div>
-                  <div className="inspector-row"><span>Status Code</span><code>{requestInspector.status} OK</code></div>
-                  <div className="inspector-row"><span>Remote Address</span><code>127.0.0.1:8000</code></div>
-                  <div className="inspector-row"><span>Referrer Policy</span><code>strict-origin-when-cross-origin</code></div>
-
-                  <div className="inspector-section-label">Response headers</div>
-                  {Object.entries(requestInspector.headers).slice(0, 6).map(([key, value]) => (
-                    <div className="inspector-row compact" key={key}><span>{key}</span><code>{value}</code></div>
-                  ))}
-                </div>
-              </aside>
-            )}
           </div>
         </div>
         <footer className="footer"><span>Built with FastAPI · React · PostgreSQL</span><a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API documentation ↗</a></footer>
