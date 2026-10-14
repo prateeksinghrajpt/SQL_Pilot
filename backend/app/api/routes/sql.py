@@ -245,8 +245,18 @@ def run_sql(payload: RunSqlRequest) -> dict[str, Any]:
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute(sql)
-        columns = [col[0] for col in (cursor.description or [])]
-        rows = cursor.fetchall()
 
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return {"sql": sql, "columns": columns, "rows": records}
+        if cursor.description:
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+            records = [dict(zip(columns, row, strict=False)) for row in rows]
+            row_count = len(rows)
+        else:
+            columns = []
+            records = []
+            row_count = getattr(cursor, "rowcount", 0)
+
+    response: dict[str, Any] = {"sql": sql, "columns": columns, "rows": records}
+    if row_count is not None:
+        response["row_count"] = row_count
+    return response

@@ -174,7 +174,8 @@ def test_run_sql_endpoint_executes_update_statement(monkeypatch):
 
     class FakeCursor:
         def __init__(self):
-            self.description = [("rowcount",)]
+            self.description = None
+            self.rowcount = 1
             self.fetchall_result = []
 
         def execute(self, query):
@@ -219,6 +220,7 @@ def test_run_sql_endpoint_executes_update_statement(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.json()["row_count"] == 1
 
 
 def test_run_sql_endpoint_executes_select_statement(monkeypatch):
