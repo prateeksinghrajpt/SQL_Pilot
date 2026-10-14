@@ -86,7 +86,7 @@ def _validate_select_statement(sql: str) -> str:
     except Exception as exc:  # pragma: no cover - invalid SQL is handled as a client error
         raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
 
-    if not getattr(parsed, "is_select", False):
+    if not isinstance(parsed, exp.Select):
         raise HTTPException(
             status_code=400,
             detail="Only SELECT queries are allowed in this phase.",
@@ -108,11 +108,17 @@ def _validate_select_statement(sql: str) -> str:
             if column.get("name")
         }
 
+    cte_aliases = {
+        _normalize_identifier(cte.alias)
+        for cte in parsed.find_all(exp.CTE)
+        if getattr(cte, "alias", None)
+    }
+
     tables_in_query: list[str] = []
     alias_map: dict[str, str] = {}
     for table_node in parsed.find_all(exp.Table):
         table_name = _normalize_identifier(table_node.name)
-        if not table_name:
+        if not table_name or table_name in cte_aliases:
             continue
         tables_in_query.append(table_name)
         if table_node.alias:
@@ -132,6 +138,8 @@ def _validate_select_statement(sql: str) -> str:
 
         if column_node.table:
             table_ref = _normalize_identifier(column_node.table)
+            if table_ref in cte_aliases:
+                continue
             if table_ref in alias_map:
                 table_ref = alias_map[table_ref]
             if table_ref not in schema_lookup or column_name not in schema_lookup[table_ref]:
