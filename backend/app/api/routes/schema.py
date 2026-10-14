@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
-
-router = APIRouter(prefix="/schema", tags=["schema"])
-
 
 def fetch_schema_metadata() -> list[dict[str, Any]]:
-    from app.db.connection import check_database_connection
     from app.core.config import get_settings
+    from app.db.connection import check_database_connection
     import psycopg
 
     settings = get_settings()
@@ -27,8 +23,8 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
                 """
             )
             tables = cur.fetchall()
-
             metadata: list[dict[str, Any]] = []
+
             for (table_name,) in tables:
                 cur.execute(
                     """
@@ -41,7 +37,6 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
                 )
                 columns = cur.fetchall()
 
-                primary_keys = []
                 cur.execute(
                     """
                     SELECT kcu.column_name
@@ -55,13 +50,11 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
                     """,
                     (table_name,),
                 )
-                for (column_name,) in cur.fetchall():
-                    primary_keys.append(column_name)
+                primary_keys = [column_name for (column_name,) in cur.fetchall()]
 
-                foreign_keys = []
                 cur.execute(
                     """
-                    SELECT kcu.column_name, ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
+                    SELECT kcu.column_name, ccu.table_name, ccu.column_name
                     FROM information_schema.table_constraints tc
                     JOIN information_schema.key_column_usage kcu
                       ON tc.constraint_name = kcu.constraint_name
@@ -73,14 +66,14 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
                     """,
                     (table_name,),
                 )
-                for row in cur.fetchall():
-                    foreign_keys.append(
-                        {
-                            "column": row[0],
-                            "references_table": row[1],
-                            "references_column": row[2],
-                        }
-                    )
+                foreign_keys = [
+                    {
+                        "column": row[0],
+                        "references_table": row[1],
+                        "references_column": row[2],
+                    }
+                    for row in cur.fetchall()
+                ]
 
                 metadata.append(
                     {
@@ -100,32 +93,3 @@ def fetch_schema_metadata() -> list[dict[str, Any]]:
                 )
 
     return metadata
-
-
-def build_schema_summary(tables: list[dict[str, Any]]) -> dict[str, Any]:
-    normalized_tables: list[dict[str, Any]] = []
-    for table in tables:
-        columns = table.get("columns", [])
-        normalized_tables.append(
-            {
-                "name": table.get("name"),
-                "column_count": len(columns),
-                "primary_key_count": len(table.get("primary_keys", [])),
-                "foreign_key_count": len(table.get("foreign_keys", [])),
-                "columns": columns,
-                "primary_keys": table.get("primary_keys", []),
-                "foreign_keys": table.get("foreign_keys", []),
-            }
-        )
-
-    return {"table_count": len(normalized_tables), "tables": normalized_tables}
-
-
-@router.get("")
-def get_schema() -> dict[str, list[dict[str, Any]]]:
-    return {"tables": fetch_schema_metadata()}
-
-
-@router.get("/summary")
-def get_schema_summary() -> dict[str, Any]:
-    return build_schema_summary(fetch_schema_metadata())

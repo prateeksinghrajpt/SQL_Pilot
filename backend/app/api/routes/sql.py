@@ -90,7 +90,7 @@ def _validate_allowed_statement(sql: str) -> str:
     if not isinstance(parsed, allowed_types):
         raise HTTPException(
             status_code=400,
-            detail="Only SELECT, INSERT, UPDATE, and DELETE queries are allowed in this phase.",
+            detail="Only SELECT, INSERT, UPDATE, and DELETE queries are allowed.",
         )
 
     try:
@@ -114,7 +114,6 @@ def _validate_allowed_statement(sql: str) -> str:
         for cte in parsed.find_all(exp.CTE)
         if getattr(cte, "alias", None)
     }
-
     tables_in_query: list[str] = []
     alias_map: dict[str, str] = {}
     for table_node in parsed.find_all(exp.Table):
@@ -203,12 +202,10 @@ def connect_db():
 def generate_sql(payload: GenerateSqlRequest) -> dict[str, str]:
     client = _get_openai_client()
     settings = get_settings()
-
     try:
         schema_tables = fetch_schema_metadata()
     except Exception:
         schema_tables = []
-
     schema_context = _format_schema_context(schema_tables)
 
     prompt = (
