@@ -281,7 +281,6 @@ export default function App() {
       <section className="main-panel">
         <header className="topbar">
           <div><span className="eyebrow">YOUR DATA, IN PLAIN ENGLISH</span><h1>Ask your data</h1></div>
-          <span className="phase-tag">PHASE 1 · FOUNDATION</span>
         </header>
         <div className="content">
           <div className="welcome-icon" aria-hidden="true">✳</div>
@@ -348,7 +347,7 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div className="notice"><span>ⓘ</span><p><strong>Foundation build.</strong> This interface currently checks backend connectivity. It does not yet generate or execute SQL.</p></div>
+          <div className="notice"><span>ⓘ</span><p>Use the draft below to review, edit, and run your SQL when you’re ready.</p></div>
         </div>
         <footer className="footer"><span>Built with FastAPI · React · PostgreSQL</span><a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API documentation ↗</a></footer>
       </section>
