@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes.auth import CSRF_COOKIE
-from app.api.routes import auth as auth_routes
 from app.core import projects as project_service
 from app.core import security
 from app.db import auth_store
@@ -68,9 +67,8 @@ def test_registration_login_and_csrf_protected_logout(client_and_key):
     assert client.get("/api/v1/auth/me").status_code == 200
 
 
-def test_trial_user_gets_one_free_generation_then_requests_access(client_and_key, monkeypatch):
+def test_trial_user_gets_one_free_generation_then_requests_access(client_and_key):
     client, _settings = client_and_key
-    monkeypatch.setattr(auth_routes, "notify_admin_access_request", lambda email: None)
 
     registered = client.post(
         "/api/v1/auth/register",
@@ -94,6 +92,44 @@ def test_trial_user_gets_one_free_generation_then_requests_access(client_and_key
     access = auth_store.get_user_access(user_id)
     assert access is not None
     assert access["access_requested_at"]
+
+
+def test_admin_can_approve_access_request(client_and_key):
+    client, settings = client_and_key
+    settings.admin_email = "rajputprateeksingh075@gmail.com"
+
+    requested_user = client.post(
+        "/api/v1/auth/register",
+        json={"email": "trial-approval@example.com", "password": "valid long password"},
+    )
+    assert requested_user.status_code == 201
+    requested_user_id = requested_user.json()["user"]["id"]
+    csrf_token = client.cookies.get(CSRF_COOKIE)
+    assert client.post(
+        "/api/v1/auth/request-access",
+        headers={"X-CSRF-Token": csrf_token},
+    ).status_code == 200
+
+    admin = TestClient(app)
+    admin_registered = admin.post(
+        "/api/v1/auth/register",
+        json={"email": "rajputprateeksingh075@gmail.com", "password": "admin valid password"},
+    )
+    assert admin_registered.status_code == 201
+    assert admin_registered.json()["user"]["is_admin"] is True
+
+    listed = admin.get("/api/v1/auth/admin/access-requests")
+    assert listed.status_code == 200
+    assert listed.json()["requests"][0]["email"] == "trial-approval@example.com"
+
+    approved = admin.post(
+        f"/api/v1/auth/admin/access-requests/{requested_user_id}",
+        headers={"X-CSRF-Token": admin.cookies.get(CSRF_COOKIE)},
+        json={"approved": True},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["request"]["approval_status"] == "approved"
+    assert auth_store.can_generate_sql(requested_user_id)["remaining_free_queries"] is None
 
 
 def test_sql_execution_requires_csrf_token(client_and_key):

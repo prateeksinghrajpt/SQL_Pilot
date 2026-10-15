@@ -67,6 +67,15 @@ def connection() -> Iterator[sqlite3.Connection]:
         db.execute("ALTER TABLE users ADD COLUMN access_requested_at TEXT")
     if "is_admin" not in user_columns:
         db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+    settings = get_settings()
+    admin_email = getattr(settings, "admin_email", None)
+    if admin_email:
+        db.execute(
+            """UPDATE users
+               SET is_admin = 1, approval_status = 'approved'
+               WHERE email = ? COLLATE NOCASE""",
+            (admin_email.strip().lower(),),
+        )
     project_columns = {row[1] for row in db.execute("PRAGMA table_info(projects)").fetchall()}
     if "data_path" not in project_columns:
         db.execute("ALTER TABLE projects ADD COLUMN data_path TEXT NOT NULL DEFAULT ''")
@@ -160,6 +169,36 @@ def mark_access_requested(user_id: str) -> dict[str, Any] | None:
             "access_requested_at": requested_at,
             "notification_needed": True,
         }
+
+
+def list_access_requests() -> list[dict[str, Any]]:
+    with connection() as db:
+        rows = db.execute(
+            """SELECT id, email, approval_status, free_queries_used, access_requested_at, created_at
+               FROM users
+               WHERE access_requested_at IS NOT NULL
+                  OR approval_status IN ('pending', 'rejected')
+               ORDER BY access_requested_at DESC, created_at DESC"""
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_user_approval(user_id: str, approved: bool) -> dict[str, Any] | None:
+    status = "approved" if approved else "rejected"
+    with connection() as db:
+        db.execute(
+            """UPDATE users
+               SET approval_status = ?
+               WHERE id = ? AND is_admin = 0""",
+            (status, user_id),
+        )
+        row = db.execute(
+            """SELECT id, email, approval_status, free_queries_used, access_requested_at, created_at
+               FROM users
+               WHERE id = ?""",
+            (user_id,),
+        ).fetchone()
+    return row_to_dict(row)
 
 
 def utc_now() -> str:

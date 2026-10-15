@@ -19,7 +19,6 @@ from app.core.security import (
     token_hash,
     verify_password,
 )
-from app.core.notifications import notify_admin_access_request
 from app.db import auth_store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -28,6 +27,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class Credentials(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=12, max_length=128)
+
+
+class AccessDecision(BaseModel):
+    approved: bool
 
 
 def _normalize_email(email: str) -> str:
@@ -65,12 +68,15 @@ def _issue_session(response: Response, user_id: str, email: str) -> dict[str, An
 def register(payload: Credentials, response: Response) -> dict[str, Any]:
     email = _normalize_email(payload.email)
     user_id = str(uuid.uuid4())
+    admin_email = getattr(auth_store.get_settings(), "admin_email", None)
+    is_admin = int(email == (admin_email or "").strip().lower())
+    approval_status = "approved" if is_admin else "trial"
     try:
         with auth_store.connection() as db:
             db.execute(
-                     """INSERT INTO users(id, email, password_hash, approval_status, created_at)
-                         VALUES (?, ?, ?, 'trial', ?)""",
-                     (user_id, email, hash_password(payload.password), auth_store.utc_now()),
+                     """INSERT INTO users(id, email, password_hash, approval_status, is_admin, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?)""",
+                     (user_id, email, hash_password(payload.password), approval_status, is_admin, auth_store.utc_now()),
             )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="An account with this email already exists") from exc
@@ -119,12 +125,37 @@ def request_access(
     access_request = auth_store.mark_access_requested(user["id"])
     if access_request is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if access_request["notification_needed"]:
-        notify_admin_access_request(access_request["email"])
     return {
         "status": "requested",
         "message": "Your access request was sent to Prateek Singh.",
     }
+
+
+def _require_admin(user: dict[str, Any]) -> None:
+    access = auth_store.get_user_access(user["id"])
+    if access is None or not bool(access["is_admin"]):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+
+@router.get("/admin/access-requests")
+def admin_access_requests(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    _require_admin(user)
+    return {"requests": auth_store.list_access_requests()}
+
+
+@router.post("/admin/access-requests/{user_id}")
+def admin_decide_access(
+    user_id: str,
+    payload: AccessDecision,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    require_csrf(request, user)
+    _require_admin(user)
+    updated = auth_store.set_user_approval(user_id, payload.approved)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"request": updated}
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

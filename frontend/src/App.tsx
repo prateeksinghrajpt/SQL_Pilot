@@ -19,6 +19,14 @@ type Project = {
   row_count: number;
   created_at: string;
 };
+type AccessRequest = {
+  id: string;
+  email: string;
+  approval_status: "trial" | "approved" | "pending" | "rejected";
+  free_queries_used: number;
+  access_requested_at: string | null;
+  created_at: string;
+};
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 function csrfToken() {
@@ -108,6 +116,10 @@ export default function App() {
   const [isEditingSql, setIsEditingSql] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accessRequestMessage, setAccessRequestMessage] = useState<string | null>(null);
+  const [showAccessRequests, setShowAccessRequests] = useState(false);
+  const [adminRequests, setAdminRequests] = useState<AccessRequest[]>([]);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminBusyId, setAdminBusyId] = useState<string | null>(null);
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const freeQueryUsed = user?.approval_status === "trial" && (user.free_queries_used ?? 0) >= 1;
 
@@ -196,6 +208,8 @@ export default function App() {
     setActiveProjectId("");
     setGeneratedSql("");
     setQueryResult(null);
+    setShowAccessRequests(false);
+    setAdminRequests([]);
   }
 
   async function handleCreateProject(event: React.FormEvent<HTMLFormElement>) {
@@ -329,6 +343,39 @@ export default function App() {
     }
   }
 
+  async function loadAccessRequests() {
+    if (!user?.is_admin) return;
+    setAdminError(null);
+    try {
+      const response = await apiRequest("/api/v1/auth/admin/access-requests");
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail ?? "Could not load access requests");
+      setAdminRequests(body.requests ?? []);
+    } catch (requestError: unknown) {
+      setAdminError(requestError instanceof Error ? requestError.message : "Could not load access requests");
+    }
+  }
+
+  async function handleAccessDecision(requestUserId: string, approved: boolean) {
+    setAdminBusyId(requestUserId);
+    setAdminError(null);
+    try {
+      const response = await apiRequest(`/api/v1/auth/admin/access-requests/${requestUserId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail ?? "Could not update access request");
+      const updated = body.request as AccessRequest;
+      setAdminRequests((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (requestError: unknown) {
+      setAdminError(requestError instanceof Error ? requestError.message : "Could not update access request");
+    } finally {
+      setAdminBusyId(null);
+    }
+  }
+
   function isMutationSql(sql: string) {
     return /^\s*(INSERT|UPDATE|DELETE|MERGE)\b/i.test(sql.trim());
   }
@@ -416,9 +463,20 @@ export default function App() {
         <div className="brand-copy"><strong>SQL Copilot</strong><span>AI data workspace</span></div>
         <div className="sidebar-section">WORKSPACE</div>
         <button className="nav-item active" type="button" onClick={() => { setGeneratedSql(""); setQueryResult(null); setQuestion(""); setError(null); setAccessRequestMessage(null); }}><span>⌘</span> New query</button>
+        {user.is_admin && (
+          <button className={`nav-item ${showAccessRequests ? "active" : ""}`} type="button" onClick={() => {
+            setShowAccessRequests((shown) => {
+              if (!shown) void loadAccessRequests();
+              return !shown;
+            });
+          }}>
+            <span>!</span> Access requests
+          </button>
+        )}
         <div className="project-controls">
           <label className="sidebar-section" htmlFor="active-project">PROJECT</label>
           <select id="active-project" value={activeProjectId} onChange={(event) => {
+            setShowAccessRequests(false);
             setActiveProjectId(event.target.value);
             setGeneratedSql("");
             setQueryResult(null);
@@ -484,7 +542,31 @@ export default function App() {
         <div className="content">
           <div className="workspace-shell">
             <div className="workspace-main">
-              {activeProject ? <>
+              {showAccessRequests ? (
+                <div className="admin-panel">
+                  <div className="section-label">PENDING ACCESS</div>
+                  {adminError && <div className="notice error"><span>!</span><p>{adminError}</p></div>}
+                  {adminRequests.length === 0 ? (
+                    <div className="results-empty">No access requests yet.</div>
+                  ) : (
+                    <div className="admin-request-list">
+                      {adminRequests.map((request) => (
+                        <div className="admin-request" key={request.id}>
+                          <div>
+                            <strong>{request.email}</strong>
+                            <span>{request.approval_status} - {request.free_queries_used} free query used</span>
+                            {request.access_requested_at && <span>Requested {new Date(request.access_requested_at).toLocaleString()}</span>}
+                          </div>
+                          <div className="admin-request-actions">
+                            <button className="project-action" type="button" disabled={adminBusyId === request.id || request.approval_status === "approved"} onClick={() => void handleAccessDecision(request.id, true)}>Approve</button>
+                            <button className="project-action danger" type="button" disabled={adminBusyId === request.id || request.approval_status === "rejected"} onClick={() => void handleAccessDecision(request.id, false)}>Reject</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : activeProject ? <>
               <div className="welcome-icon" aria-hidden="true">✳</div>
               <h2>What would you like to know?</h2>
               <p className="subtitle">Describe a business question. The app will generate SQL for review, then you can edit and run it manually.</p>
