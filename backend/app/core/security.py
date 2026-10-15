@@ -55,13 +55,15 @@ def get_current_user(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     with auth_store.connection() as db:
         row = db.execute(
-            """SELECT users.id, users.email, sessions.csrf_hash, sessions.expires_at
+            """SELECT users.id, users.email, users.approval_status, sessions.csrf_hash, sessions.expires_at
                FROM sessions JOIN users ON users.id = sessions.user_id
                WHERE sessions.token_hash = ?""",
             (token_hash(session_token),),
         ).fetchone()
     if row is None or row["expires_at"] <= int(time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+    if row["approval_status"] not in ("trial", "approved"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your access request is awaiting administrator approval")
     request.state.session_csrf_hash = row["csrf_hash"]
     return {"id": row["id"], "email": row["email"]}
 

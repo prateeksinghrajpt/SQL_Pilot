@@ -55,6 +55,8 @@ def authenticated_project(monkeypatch, tmp_path):
 
     app.dependency_overrides[get_current_user_with_csrf] = lambda: USER
     monkeypatch.setattr(sql_routes, "get_owned_project", get_project)
+    monkeypatch.setattr(sql_routes.auth_store, "can_generate_sql", lambda user_id: {"allowed": True})
+    monkeypatch.setattr(sql_routes.auth_store, "consume_free_generation", lambda user_id: {"allowed": True})
     yield project
     app.dependency_overrides.clear()
 

@@ -12,6 +12,7 @@ from sqlglot import exp
 from app.core.projects import get_owned_project
 from app.core.config import get_settings
 from app.core.security import get_current_user_with_csrf
+from app.db import auth_store
 
 try:
     from openai import OpenAI
@@ -194,6 +195,12 @@ def generate_sql(
     user: dict[str, Any] = Depends(get_current_user_with_csrf),
 ) -> dict[str, str]:
     project = get_owned_project(user["id"], payload.project_id)
+    access = auth_store.can_generate_sql(user["id"])
+    if not access["allowed"]:
+        raise HTTPException(
+            status_code=403,
+            detail="You have used your free query. Request access from Prateek Singh to generate more SQL.",
+        )
     client = _get_openai_client()
     settings = get_settings()
     schema_context = _format_schema_context(project["schema_snapshot"])
@@ -223,6 +230,7 @@ def generate_sql(
     sql = _normalize_sql_text(response.choices[0].message.content)
     if not sql:
         raise HTTPException(status_code=500, detail="Model returned empty SQL")
+    auth_store.consume_free_generation(user["id"])
     return {"sql": sql, "question": payload.question}
 
 
