@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
+    approval_status TEXT NOT NULL DEFAULT 'trial',
+    free_queries_used INTEGER NOT NULL DEFAULT 0,
+    access_requested_at TEXT,
+    is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -54,6 +58,15 @@ def connection() -> Iterator[sqlite3.Connection]:
     db.execute("PRAGMA foreign_keys = ON")
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
+    user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+    if "approval_status" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'trial'")
+    if "free_queries_used" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN free_queries_used INTEGER NOT NULL DEFAULT 0")
+    if "access_requested_at" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN access_requested_at TEXT")
+    if "is_admin" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     project_columns = {row[1] for row in db.execute("PRAGMA table_info(projects)").fetchall()}
     if "data_path" not in project_columns:
         db.execute("ALTER TABLE projects ADD COLUMN data_path TEXT NOT NULL DEFAULT ''")
@@ -75,6 +88,78 @@ def connection() -> Iterator[sqlite3.Connection]:
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def get_user_access(user_id: str) -> dict[str, Any] | None:
+    with connection() as db:
+        row = db.execute(
+            """SELECT id, email, approval_status, free_queries_used, access_requested_at, is_admin
+               FROM users
+               WHERE id = ?""",
+            (user_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def consume_free_generation(user_id: str) -> dict[str, Any]:
+    with connection() as db:
+        row = db.execute(
+            """SELECT approval_status, free_queries_used
+               FROM users
+               WHERE id = ?""",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return {"allowed": False, "reason": "missing"}
+        if row["approval_status"] == "approved":
+            return {"allowed": True, "remaining_free_queries": None}
+        if row["approval_status"] != "trial":
+            return {"allowed": False, "reason": row["approval_status"]}
+        if int(row["free_queries_used"]) >= 1:
+            return {"allowed": False, "reason": "free_query_used"}
+        db.execute(
+            "UPDATE users SET free_queries_used = free_queries_used + 1 WHERE id = ?",
+            (user_id,),
+        )
+    return {"allowed": True, "remaining_free_queries": 0}
+
+
+def can_generate_sql(user_id: str) -> dict[str, Any]:
+    access = get_user_access(user_id)
+    if access is None:
+        return {"allowed": False, "reason": "missing"}
+    if access["approval_status"] == "approved":
+        return {"allowed": True, "remaining_free_queries": None}
+    if access["approval_status"] != "trial":
+        return {"allowed": False, "reason": access["approval_status"]}
+    if int(access["free_queries_used"]) >= 1:
+        return {"allowed": False, "reason": "free_query_used"}
+    return {"allowed": True, "remaining_free_queries": 1}
+
+
+def mark_access_requested(user_id: str) -> dict[str, Any] | None:
+    requested_at = utc_now()
+    with connection() as db:
+        row = db.execute(
+            "SELECT id, email, access_requested_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["access_requested_at"]:
+            existing = row_to_dict(row)
+            existing["notification_needed"] = False
+            return existing
+        db.execute(
+            "UPDATE users SET access_requested_at = ? WHERE id = ?",
+            (requested_at, user_id),
+        )
+        return {
+            "id": row["id"],
+            "email": row["email"],
+            "access_requested_at": requested_at,
+            "notification_needed": True,
+        }
 
 
 def utc_now() -> str:

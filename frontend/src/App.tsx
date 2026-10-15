@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 
 type HealthResponse = { status: string; service: string; version: string };
-type User = { id: string; email: string };
+type User = {
+  id: string;
+  email: string;
+  is_admin?: boolean;
+  approval_status?: "trial" | "approved" | "pending" | "rejected";
+  free_queries_used?: number;
+  access_requested?: boolean;
+};
 type Project = {
   id: string;
   name: string;
@@ -100,7 +107,9 @@ export default function App() {
   const [runningSql, setRunningSql] = useState(false);
   const [isEditingSql, setIsEditingSql] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [accessRequestMessage, setAccessRequestMessage] = useState<string | null>(null);
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const freeQueryUsed = user?.approval_status === "trial" && (user.free_queries_used ?? 0) >= 1;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -277,6 +286,7 @@ export default function App() {
     event.preventDefault();
     if (!activeProject) return;
     setError(null);
+    setAccessRequestMessage(null);
     setQueryResult(null);
     setGeneratedSql("");
     setLoading(true);
@@ -295,10 +305,27 @@ export default function App() {
 
       const data = await response.json() as { sql: string };
       setGeneratedSql(data.sql);
+      setUser((current) => current?.approval_status === "trial"
+        ? { ...current, free_queries_used: (current.free_queries_used ?? 0) + 1 }
+        : current);
     } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "Unknown error");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleRequestAccess() {
+    setAccessRequestMessage(null);
+    setError(null);
+    try {
+      const response = await apiRequest("/api/v1/auth/request-access", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail ?? "Could not request access");
+      setAccessRequestMessage(body.message ?? "Your access request was sent to Prateek Singh.");
+      setUser((current) => current ? { ...current, access_requested: true } : current);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Could not request access");
     }
   }
 
@@ -388,7 +415,7 @@ export default function App() {
         <div className="brand-mark">S</div>
         <div className="brand-copy"><strong>SQL Copilot</strong><span>AI data workspace</span></div>
         <div className="sidebar-section">WORKSPACE</div>
-        <button className="nav-item active" type="button" onClick={() => { setGeneratedSql(""); setQueryResult(null); setQuestion(""); setError(null); }}><span>⌘</span> New query</button>
+        <button className="nav-item active" type="button" onClick={() => { setGeneratedSql(""); setQueryResult(null); setQuestion(""); setError(null); setAccessRequestMessage(null); }}><span>⌘</span> New query</button>
         <div className="project-controls">
           <label className="sidebar-section" htmlFor="active-project">PROJECT</label>
           <select id="active-project" value={activeProjectId} onChange={(event) => {
@@ -396,6 +423,7 @@ export default function App() {
             setGeneratedSql("");
             setQueryResult(null);
             setError(null);
+            setAccessRequestMessage(null);
           }}>
             <option value="">Select a project</option>
             {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
@@ -465,11 +493,19 @@ export default function App() {
                 <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)}
                   placeholder="e.g. Show the top 10 customers by total revenue…" rows={3} />
                 <div className="query-box-footer">
-                  <span className="input-hint">Natural language → SQL draft</span>
-                  <button className="submit-button" type="submit" disabled={!question.trim() || loading}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
+                  <span className="input-hint">{freeQueryUsed ? "Free query used" : "Natural language → SQL draft"}</span>
+                  <button className="submit-button" type="submit" disabled={!question.trim() || loading || freeQueryUsed}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
                 </div>
               </form>
               {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
+              {freeQueryUsed && (
+                <div className="notice access-lock">
+                  <span>!</span>
+                  <p>{user.access_requested ? "Your access request has been sent to Prateek Singh." : "You have used your free query. Request access from Prateek Singh to generate more SQL."}</p>
+                  {!user.access_requested && <button className="project-action" type="button" onClick={handleRequestAccess}>Request access</button>}
+                </div>
+              )}
+              {accessRequestMessage && <div className="notice"><span>i</span><p>{accessRequestMessage}</p></div>}
               {generatedSql && isMutationSql(generatedSql) && (
                 <div className="notice error">
                   <span>⚠</span>

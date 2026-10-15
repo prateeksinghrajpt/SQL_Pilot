@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes.auth import CSRF_COOKIE
+from app.api.routes import auth as auth_routes
 from app.core import projects as project_service
 from app.core import security
 from app.db import auth_store
@@ -65,6 +66,34 @@ def test_registration_login_and_csrf_protected_logout(client_and_key):
     )
     assert login.status_code == 200
     assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_trial_user_gets_one_free_generation_then_requests_access(client_and_key, monkeypatch):
+    client, _settings = client_and_key
+    monkeypatch.setattr(auth_routes, "notify_admin_access_request", lambda email: None)
+
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={"email": "trial@example.com", "password": "valid long password"},
+    )
+    assert registered.status_code == 201
+    user_id = registered.json()["user"]["id"]
+
+    assert auth_store.can_generate_sql(user_id)["allowed"] is True
+    assert auth_store.consume_free_generation(user_id)["allowed"] is True
+    assert auth_store.can_generate_sql(user_id)["allowed"] is False
+
+    csrf_token = client.cookies.get(CSRF_COOKIE)
+    requested = client.post(
+        "/api/v1/auth/request-access",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert requested.status_code == 200
+    assert requested.json()["status"] == "requested"
+
+    access = auth_store.get_user_access(user_id)
+    assert access is not None
+    assert access["access_requested_at"]
 
 
 def test_sql_execution_requires_csrf_token(client_and_key):

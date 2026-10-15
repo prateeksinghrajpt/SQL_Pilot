@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     app_database_path: str = str(BASE_DIR / "backend" / "data" / "app.sqlite3")
     cookie_secure: bool = False
     max_result_rows: int = Field(default=200, ge=1, le=5000)
+    admin_email: str | None = "rajputprateeksingh075@gmail.com"
+    admin_password: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    app_public_url: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
