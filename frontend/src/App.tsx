@@ -576,7 +576,9 @@ export default function App() {
                   placeholder="e.g. Show the top 10 customers by total revenue…" rows={3} />
                 <div className="query-box-footer">
                   <span className="input-hint">{freeQueryUsed ? "Free query used" : "Natural language → SQL draft"}</span>
-                  <button className="submit-button" type="submit" disabled={!question.trim() || loading || freeQueryUsed}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
+                  <span title={freeQueryUsed ? "Please raise an access request to generate more SQL." : undefined}>
+                    <button className="submit-button" type="submit" disabled={!question.trim() || loading || freeQueryUsed}>{loading ? "Generating…" : "Prepare question"} <span>↗</span></button>
+                  </span>
                 </div>
               </form>
               {error && <div className="notice error"><span>⚠</span><p>{error}</p></div>}
